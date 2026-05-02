@@ -38,6 +38,7 @@ const cropOptions = ref<AutoCropOptions>({
   cannyHigh: 150,
   blurRadius: 5,
   polyEpsilon: 2,
+  marginMm: 15, // default bleed margin (typical sticker-print convention)
 })
 const maskVisible = ref<boolean>(true)
 
@@ -74,6 +75,30 @@ async function fetchAsObjectUrl(file: OrderFile): Promise<string> {
 
 // === Auto-crop ===
 
+/**
+ * Image-natural pixels per mm at print resolution.
+ *
+ * If the order already has a width chosen on /order-config, we know exactly
+ * how many natural pixels map to a millimeter (image_width_px / order_width_mm).
+ *
+ * Until size is picked we have to guess so the 15 mm margin renders as
+ * *something* visible in the editor. Default assumption: the longest image
+ * edge will print at 100 mm — typical sticker size. The customer can still
+ * tweak the slider; the actual print scale is recomputed when size lands
+ * on /order-config and the next Auto cut uses real numbers.
+ */
+const DEFAULT_LONG_EDGE_MM = 100
+
+const pxPerMm = computed<number | null>(() => {
+  if (!loadedImage.value) return null
+  const { naturalWidth, naturalHeight } = loadedImage.value
+  if (order.value?.width_mm && order.value.width_mm > 0) {
+    return naturalWidth / order.value.width_mm
+  }
+  const longEdge = Math.max(naturalWidth, naturalHeight)
+  return longEdge / DEFAULT_LONG_EDGE_MM
+})
+
 async function onAutoCut() {
   if (!order.value || !canvasRef.value?.hasImage()) return
 
@@ -90,7 +115,9 @@ async function onAutoCut() {
 
   noContourMessage.value = null
   try {
-    const result = await runAutoCrop(loadedImage.value, cropOptions.value)
+    const result = await runAutoCrop(loadedImage.value, cropOptions.value, {
+      pxPerMm: pxPerMm.value,
+    })
     if (result.kind === 'no-contour-found') {
       noContourMessage.value =
         'No pudimos detectar un contorno. Probá ajustar los umbrales o subí una foto con más contraste.'

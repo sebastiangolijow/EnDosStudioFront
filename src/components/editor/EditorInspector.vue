@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { type AutoCropOptions } from '@/composables/useAutoCrop'
+import { type AutoCropOptions } from '@/composables/useAutoCropWorker'
 
 interface Props {
   /** Show/hide the mask layer. v-model:mask-visible. */
@@ -36,6 +36,32 @@ defineEmits<{
         @change="$emit('update:maskVisible', ($event.target as HTMLInputElement).checked)"
       >
     </label>
+
+    <hr class="border-border">
+
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
+      Margen
+    </h2>
+
+    <!-- Bleed margin (mm) — outward offset around the auto-detected
+         contour. 15 mm is the print-shop default; some products want
+         more (10–25). The slider re-runs auto-crop debounced. -->
+    <div>
+      <div class="mb-1 flex items-baseline justify-between gap-2">
+        <label class="text-sm text-text">Margen alrededor</label>
+        <span class="text-xs text-text-muted">{{ options.marginMm ?? 15 }} mm</span>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="30"
+        step="1"
+        :value="options.marginMm ?? 15"
+        class="w-full accent-primary"
+        data-testid="slider-margin-mm"
+        @input="$emit('update:options', { ...options, marginMm: Number(($event.target as HTMLInputElement).value) })"
+      >
+    </div>
 
     <hr class="border-border">
 

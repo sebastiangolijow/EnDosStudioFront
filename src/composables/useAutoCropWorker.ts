@@ -29,6 +29,18 @@ export interface AutoCropOptions {
   cannyHigh?: number
   blurRadius?: number
   polyEpsilon?: number
+  /** Outward bleed margin around the contour, in mm. Default 15. */
+  marginMm?: number
+}
+
+/**
+ * Print-scale context for converting `marginMm` to pixels. The main thread
+ * computes this from the order's chosen sticker width (if set) or a sane
+ * default; the worker just multiplies. Decoupled so the worker stays pure.
+ */
+export interface AutoCropScale {
+  /** Image-natural pixels per mm at print resolution. */
+  pxPerMm: number | null
 }
 
 export interface ImagePoint {
@@ -160,6 +172,7 @@ export function useAutoCropWorker() {
   async function run(
     image: HTMLImageElement,
     options: AutoCropOptions = {},
+    scale: AutoCropScale = { pxPerMm: null },
   ): Promise<DieCutResult> {
     isProcessing.value = true
     lastError.value = null
@@ -190,6 +203,7 @@ export function useAutoCropWorker() {
           workingHeight,
           naturalWidth: image.naturalWidth,
           naturalHeight: image.naturalHeight,
+          pxPerMm: scale.pxPerMm,
           options: { ...options },
         })
       })
