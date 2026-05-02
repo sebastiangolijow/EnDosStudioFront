@@ -146,22 +146,36 @@ export function useCanvasEditor() {
 
     if (!maskVisible.value || !maskPoints.value || !fit || maskPoints.value.length === 0) return
 
-    // Trace the polygon in CSS pixels.
+    // Trace the polygon in CSS pixels. Track the bounding box at the same
+    // time so a gradient fill can size itself correctly.
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
     ctx.beginPath()
     for (let i = 0; i < maskPoints.value.length; i++) {
       const css = imageToCss(maskPoints.value[i])
       if (!css) continue
+      if (css.x < minX) minX = css.x
+      if (css.y < minY) minY = css.y
+      if (css.x > maxX) maxX = css.x
+      if (css.y > maxY) maxY = css.y
       if (i === 0) ctx.moveTo(css.x, css.y)
       else ctx.lineTo(css.x, css.y)
     }
     ctx.closePath()
 
-    // Translucent fill + crisp stroke. Colors come from `maskPalette` so the
-    // halo can preview the chosen material's tone (holographic = teal,
-    // dorado = gold, etc.). Default = brand primary orange.
-    ctx.fillStyle = maskPalette.value.fill
+    // Resolve fill — palette.fill can be a flat string OR a gradient factory.
+    // Gradient factories need the polygon bbox so the gradient stops land
+    // inside the halo (a canvas-sized gradient would clip them off-shape).
+    const palette = maskPalette.value
+    const fillSpec =
+      typeof palette.fill === 'function'
+        ? palette.fill(ctx, { x: minX, y: minY, width: maxX - minX, height: maxY - minY })
+        : palette.fill
+    ctx.fillStyle = fillSpec
     ctx.fill()
-    ctx.strokeStyle = maskPalette.value.stroke
+    ctx.strokeStyle = palette.stroke
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
     ctx.stroke()
