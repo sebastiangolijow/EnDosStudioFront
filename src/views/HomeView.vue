@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
-import heroSticker from '@/assets/examples/hero-sticker.jpeg'
+import heroSticker from '@/assets/examples/hero-sticker.png'
 
 const router = useRouter()
 
@@ -80,7 +80,8 @@ const inspiration = Array.from({ length: 6 }, (_, i) => ({ id: i }))
           class="absolute inset-0 bg-orange-glow"
           aria-hidden="true"
         />
-        <!-- Hero sticker — sample of what customers can produce. -->
+        <!-- Hero sticker — real transparent PNG (RGBA). Drop-shadow uses the
+             brand orange to sell depth against the cosmic backdrop. -->
         <div class="relative flex h-full items-center justify-center p-6">
           <img
             :src="heroSticker"
