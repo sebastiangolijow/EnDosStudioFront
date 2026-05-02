@@ -59,6 +59,15 @@ interface OpenCv {
     borderType: number,
   ): void
   Canny(src: MatLike, dst: MatLike, threshold1: number, threshold2: number): void
+  threshold(
+    src: MatLike,
+    dst: MatLike,
+    thresh: number,
+    maxval: number,
+    type: number,
+  ): number
+  inRange(src: MatLike, lowerb: MatLike, upperb: MatLike, dst: MatLike): void
+  morphologyEx(src: MatLike, dst: MatLike, op: number, kernel: MatLike): void
   findContours(
     image: MatLike,
     contours: MatVectorLike,
@@ -82,18 +91,28 @@ interface OpenCv {
     anchor?: { x: number; y: number },
     iterations?: number,
   ): void
+  bitwise_not(src: MatLike, dst: MatLike): void
   getStructuringElement(
     shape: number,
     ksize: { width: number; height: number },
   ): MatLike
+  matFromArray(rows: number, cols: number, type: number, array: number[]): MatLike
 
   COLOR_RGBA2GRAY: number
+  COLOR_RGBA2RGB: number
   BORDER_DEFAULT: number
   RETR_EXTERNAL: number
   CHAIN_APPROX_SIMPLE: number
   CV_8UC1: number
+  CV_8UC3: number
+  CV_32FC3: number
   FILLED: number
   MORPH_ELLIPSE: number
+  MORPH_OPEN: number
+  MORPH_CLOSE: number
+  THRESH_BINARY: number
+  THRESH_BINARY_INV: number
+  THRESH_OTSU: number
 
   onRuntimeInitialized?: () => void
 }
@@ -176,6 +195,74 @@ function post(msg: OutgoingMessage) {
   ;(self as unknown as Worker).postMessage(msg)
 }
 
+// === Pre-pass: scan ImageData on JS side ===
+//
+// Two cheap inspections on the raw RGBA bytes drive strategy selection:
+//   1. Does the image have meaningful transparency? (any pixel with α < 250)
+//   2. What's the dominant background color? (sample edges + corners)
+//
+// We do this on the JS side because it's faster than copying the data into
+// a Mat and OpenCV-walking it; it's just typed-array iteration.
+
+interface ImageInspection {
+  hasAlpha: boolean
+  /** Sampled background color in RGB (0–255). Median of edge pixels. */
+  bgR: number
+  bgG: number
+  bgB: number
+  /** Standard deviation of edge pixels — high stddev = busy/textured edges,
+   *  in which case background-color trim is unreliable and we should
+   *  fall through to Canny. */
+  bgStdDev: number
+}
+
+function inspectImage(data: Uint8ClampedArray, w: number, h: number): ImageInspection {
+  // Alpha pass: any pixel meaningfully transparent?
+  let hasAlpha = false
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 250) {
+      hasAlpha = true
+      break
+    }
+  }
+
+  // Edge sampling: walk the perimeter (top + bottom rows, left + right cols).
+  // Use median, not mean — robust against the artwork peeking into the
+  // border. Stride large samples to keep this fast on big images.
+  const samples: { r: number; g: number; b: number }[] = []
+  const stride = Math.max(1, Math.round(Math.max(w, h) / 200))
+  for (let x = 0; x < w; x += stride) {
+    const top = (0 * w + x) * 4
+    const bot = ((h - 1) * w + x) * 4
+    samples.push({ r: data[top], g: data[top + 1], b: data[top + 2] })
+    samples.push({ r: data[bot], g: data[bot + 1], b: data[bot + 2] })
+  }
+  for (let y = 0; y < h; y += stride) {
+    const left = (y * w + 0) * 4
+    const right = (y * w + (w - 1)) * 4
+    samples.push({ r: data[left], g: data[left + 1], b: data[left + 2] })
+    samples.push({ r: data[right], g: data[right + 1], b: data[right + 2] })
+  }
+  const median = (key: 'r' | 'g' | 'b') => {
+    const sorted = samples.map((s) => s[key]).sort((a, b) => a - b)
+    return sorted[Math.floor(sorted.length / 2)]
+  }
+  const bgR = median('r')
+  const bgG = median('g')
+  const bgB = median('b')
+  // Distance of each sample from the median, then mean — good-enough stddev.
+  let totalDist = 0
+  for (const s of samples) {
+    const dr = s.r - bgR
+    const dg = s.g - bgG
+    const db = s.b - bgB
+    totalDist += Math.sqrt(dr * dr + dg * dg + db * db)
+  }
+  const bgStdDev = totalDist / samples.length
+
+  return { hasAlpha, bgR, bgG, bgB, bgStdDev }
+}
+
 async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' }>) {
   const {
     requestId,
@@ -211,6 +298,9 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
         ? Math.max(0, Math.round(marginMm * pxPerMm * naturalToWorking))
         : 0
 
+    // Pre-pass on the raw ImageData (no OpenCV needed).
+    const inspection = inspectImage(imageData.data, workingWidth, workingHeight)
+
     const src = cv.matFromImageData(imageData)
     const gray = new cv.Mat()
     const blurred = new cv.Mat()
@@ -220,6 +310,12 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     // Filled-mask path (used to dilate by N px and re-extract the outer
     // boundary). approxPolyDP at the end smooths the dilated shape.
     const filled = cv.Mat.zeros(workingHeight, workingWidth, cv.CV_8UC1)
+    // Buffers for color-distance / threshold paths.
+    const rgb = new cv.Mat()
+    const bgLow = new cv.Mat()
+    const bgHigh = new cv.Mat()
+    const colorMask = new cv.Mat()
+    const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5))
     let kernelMat: MatLike | null = null
     const dilated = new cv.Mat()
     const dilatedContours = new cv.MatVector()
@@ -227,42 +323,152 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     const approx = new cv.Mat()
 
     try {
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
-      cv.GaussianBlur(gray, blurred, new cv.Size(kernel, kernel), 0, 0, cv.BORDER_DEFAULT)
-      cv.Canny(blurred, edges, cannyLow, cannyHigh)
-      cv.findContours(edges, rawContours, hierarchy1, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+      const totalPixels = workingWidth * workingHeight
+      // Drop tiny noise contours (< 1% of canvas) and ignore the canvas
+      // boundary itself (≥ 99%). The remainder is "real artwork."
+      const MIN_AREA = totalPixels * 0.005
+      const MAX_AREA = totalPixels * 0.99
 
-      if (rawContours.size() === 0) {
+      // Helper: given a binary 8UC1 mask, paint the union of its real
+      // contours into `filled`. Returns true if any contour was kept.
+      function paintContoursFromMask(mask: MatLike): boolean {
+        const localContours = new cv.MatVector()
+        const localHierarchy = new cv.Mat()
+        try {
+          cv.findContours(
+            mask,
+            localContours,
+            localHierarchy,
+            cv.RETR_EXTERNAL,
+            cv.CHAIN_APPROX_SIMPLE,
+          )
+          let kept = 0
+          for (let i = 0; i < localContours.size(); i++) {
+            const a = cv.contourArea(localContours.get(i))
+            if (a < MIN_AREA || a > MAX_AREA) continue
+            cv.drawContours(
+              filled,
+              localContours,
+              i,
+              new cv.Scalar(255, 255, 255, 255),
+              cv.FILLED,
+            )
+            kept++
+          }
+          return kept > 0
+        } finally {
+          localContours.delete()
+          localHierarchy.delete()
+        }
+      }
+
+      // === Strategy A: alpha channel ===
+      // Truth is in α: anything visible is artwork. Robust on transparent
+      // PNGs (DNA helix, isolated logos, dotted text). No tuning needed.
+      let strategyUsed: 'alpha' | 'bg-trim' | 'canny' | null = null
+      if (inspection.hasAlpha) {
+        // Build a single-channel alpha image. Fastest path: write the alpha
+        // bytes into a fresh ImageData-backed Mat — but OpenCV.js doesn't
+        // expose channel-split as cleanly as desktop OpenCV, so iterate.
+        const alphaMask = new cv.Mat(workingHeight, workingWidth, cv.CV_8UC1)
+        try {
+          // alphaMask.data is a typed-array view we can fill.
+          const dst = (alphaMask as unknown as { data: Uint8Array }).data
+          const srcArr = imageData.data
+          for (let i = 0; i < totalPixels; i++) {
+            dst[i] = srcArr[i * 4 + 3] >= 128 ? 255 : 0
+          }
+          // A single MORPH_OPEN cleans up speckle without nuking thin features.
+          cv.morphologyEx(alphaMask, alphaMask, cv.MORPH_OPEN, morphKernel)
+          if (paintContoursFromMask(alphaMask)) strategyUsed = 'alpha'
+        } finally {
+          alphaMask.delete()
+        }
+      }
+
+      // === Strategy B: background-color trim ===
+      // Image is opaque. If the perimeter is uniform-ish, the median edge
+      // color is the background. Build a binary mask of "near-background"
+      // pixels and invert. Skip if perimeter stddev is too high (busy
+      // backgrounds defeat this assumption — Canny is the next fallback).
+      const BG_STDDEV_THRESHOLD = 35
+      if (
+        strategyUsed === null &&
+        !inspection.hasAlpha &&
+        inspection.bgStdDev < BG_STDDEV_THRESHOLD
+      ) {
+        // Drop alpha channel — inRange wants 3-channel input.
+        cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB)
+        const tol = 25
+        const lo = [
+          Math.max(0, inspection.bgR - tol),
+          Math.max(0, inspection.bgG - tol),
+          Math.max(0, inspection.bgB - tol),
+        ]
+        const hi = [
+          Math.min(255, inspection.bgR + tol),
+          Math.min(255, inspection.bgG + tol),
+          Math.min(255, inspection.bgB + tol),
+        ]
+        // inRange's bounds must be Mats sized to the input; matFromArray
+        // gives us 1×1×3 scalars that broadcast.
+        const bgLowSrc = cv.matFromArray(1, 1, cv.CV_8UC3, lo)
+        const bgHighSrc = cv.matFromArray(1, 1, cv.CV_8UC3, hi)
+        try {
+          cv.inRange(rgb, bgLowSrc, bgHighSrc, colorMask)
+          // colorMask = 255 where pixel ≈ background. Invert to get artwork.
+          cv.bitwise_not(colorMask, colorMask)
+          // Close small holes inside the artwork (gaps from glare on the
+          // sticker itself), then open to drop tiny noise.
+          cv.morphologyEx(colorMask, colorMask, cv.MORPH_CLOSE, morphKernel)
+          cv.morphologyEx(colorMask, colorMask, cv.MORPH_OPEN, morphKernel)
+          if (paintContoursFromMask(colorMask)) strategyUsed = 'bg-trim'
+        } finally {
+          bgLowSrc.delete()
+          bgHighSrc.delete()
+        }
+      }
+
+      // === Strategy C: Canny edge detection (fallback) ===
+      // Last resort. Works when there's a clear luminance edge between
+      // sticker and background but neither alpha nor bg-color help.
+      if (strategyUsed === null) {
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
+        cv.GaussianBlur(gray, blurred, new cv.Size(kernel, kernel), 0, 0, cv.BORDER_DEFAULT)
+        cv.Canny(blurred, edges, cannyLow, cannyHigh)
+        cv.findContours(edges, rawContours, hierarchy1, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+
+        // Canny gives many small edge pieces; pick max-area like before
+        // (the alpha/bg-trim paths handle multi-piece artwork via union).
+        let bestIdx = -1
+        let bestArea = -1
+        for (let i = 0; i < rawContours.size(); i++) {
+          const a = cv.contourArea(rawContours.get(i))
+          if (a < MIN_AREA || a > MAX_AREA) continue
+          if (a > bestArea) {
+            bestArea = a
+            bestIdx = i
+          }
+        }
+        if (bestIdx >= 0) {
+          cv.drawContours(
+            filled,
+            rawContours,
+            bestIdx,
+            new cv.Scalar(255, 255, 255, 255),
+            cv.FILLED,
+          )
+          strategyUsed = 'canny'
+        }
+      }
+
+      if (strategyUsed === null) {
         post({ kind: 'result', requestId, result: { kind: 'no-contour-found' } })
         return
       }
 
-      // Pick the largest contour by area — sticker is presumably the
-      // biggest thing in the photo against a contrasting background.
-      let bestIdx = 0
-      let bestArea = -1
-      for (let i = 0; i < rawContours.size(); i++) {
-        const area = cv.contourArea(rawContours.get(i))
-        if (area > bestArea) {
-          bestArea = area
-          bestIdx = i
-        }
-      }
-
-      // Dilation step: paint the chosen contour as a filled white shape on
-      // a black canvas, dilate it by N px (an elliptical kernel gives a
-      // smooth, isotropic offset), then re-extract the outer contour. This
-      // produces a true geometric offset — concavities are filled in
-      // proportionally, the way a print bleed margin behaves physically.
-      // drawContours can index a single contour out of the existing
-      // MatVector, no need to copy it into a fresh vector.
-      cv.drawContours(
-        filled,
-        rawContours,
-        bestIdx,
-        new cv.Scalar(255, 255, 255, 255),
-        cv.FILLED,
-      )
+      // Telemetry — useful in browser devtools when debugging a problem image.
+      console.info(`[autocrop] strategy=${strategyUsed} hasAlpha=${inspection.hasAlpha} bgStdDev=${inspection.bgStdDev.toFixed(1)}`)
 
       let sourceMaskForExtract: MatLike = filled
       if (dilateRadiusWorking > 0) {
@@ -342,6 +548,11 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       rawContours.delete()
       hierarchy1.delete()
       filled.delete()
+      rgb.delete()
+      bgLow.delete()
+      bgHigh.delete()
+      colorMask.delete()
+      morphKernel.delete()
       kernelMat?.delete()
       dilated.delete()
       dilatedContours.delete()
