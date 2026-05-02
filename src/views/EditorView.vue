@@ -8,7 +8,7 @@ import EditorToolbar from '@/components/editor/EditorToolbar.vue'
 import EditorInspector from '@/components/editor/EditorInspector.vue'
 import { ordersService } from '@/services/orders.service'
 import { filesService } from '@/services/files.service'
-import { type AutoCropOptions, useAutoCrop } from '@/composables/useAutoCrop'
+import { type AutoCropOptions, useAutoCropWorker } from '@/composables/useAutoCropWorker'
 import { useToast } from '@/composables/useToast'
 import { type Order, type OrderFile } from '@/types/order'
 
@@ -41,21 +41,22 @@ const cropOptions = ref<AutoCropOptions>({
 })
 const maskVisible = ref<boolean>(true)
 
-const { isProcessing, run: runAutoCrop, error: autoCropError } = useAutoCrop()
-
 /**
- * Auto-crop is gated for M2. The OpenCV.js WASM bundle (~10 MB) blocks the
- * main thread on first compile long enough that Chrome marks the renderer
- * "Page Unresponsive", even with lazy loading. The proper fix is a Web
- * Worker (per the opencv-js-integration skill) — not blocking M2.
+ * Auto-crop runs in a Web Worker. The ~10 MB OpenCV.js WASM compile happens
+ * on the worker thread, so the main thread (and the UI) stays responsive
+ * while the customer waits for the Auto cut button to enable.
  *
- * The pipeline + composables stay intact (useOpenCV, useAutoCrop, mask
- * render + export) so flipping this back on is a small change. To re-enable:
- *   1. Worker-ize the pipeline (opencv-js-integration skill).
- *   2. Or: replace these stubs with `useOpenCV()` and accept the ~15s freeze.
+ * `isReady` flips true the moment the worker emits its `ready` message —
+ * that's our cue to ungate the toolbar button.
  */
-const openCvReady = ref(false)
-const openCvError = ref<string | null>(null)
+const {
+  isReady: openCvReady,
+  isProcessing,
+  run: runAutoCrop,
+  error: autoCropError,
+  workerError: openCvError,
+  progressMessage,
+} = useAutoCropWorker()
 
 // === Image hydration ===
 
@@ -276,7 +277,7 @@ onMounted(bootstrapEditor)
           class="rounded-md border border-warning/40 bg-warning/10 p-3 text-center text-sm text-warning"
           data-testid="editor-processing"
         >
-          Detectando el contorno…
+          {{ progressMessage || 'Detectando el contorno…' }}
         </div>
         <div
           v-else-if="noContourMessage"
@@ -291,16 +292,22 @@ onMounted(bootstrapEditor)
         >
           {{ autoCropError }}
         </div>
-        <!-- Auto-crop is gated for M2 (see AUTO_CROP_ENABLED in script).
-             The UI keeps the toolbar + sliders so the customer can preview
-             where the controls will land; "coming soon" sets expectations
-             clearly. Continuar still works without a mask. -->
+        <div
+          v-else-if="!openCvReady"
+          class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
+          data-testid="editor-loading-engine"
+        >
+          Cargando motor de detección…
+          <span class="block text-xs text-text-muted/80">
+            La primera carga puede tardar unos segundos. Mientras tanto podés continuar.
+          </span>
+        </div>
         <div
           v-else
           class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
-          data-testid="editor-coming-soon"
+          data-testid="editor-ready"
         >
-          El recorte automático llega pronto. Por ahora podés continuar y elegir material y tamaño.
+          Tocá <strong>Auto cut</strong> para detectar el contorno.
         </div>
       </div>
 

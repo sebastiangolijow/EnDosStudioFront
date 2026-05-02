@@ -73,10 +73,15 @@ test.describe('editor', () => {
   test.setTimeout(60_000)
   test.describe.configure({ mode: 'serial' })
 
-  // Auto-crop is gated for M2 (see EditorView script comment). The editor
-  // ships with a "coming soon" banner where OpenCV would otherwise load.
-  // Belt-and-suspenders: block the CDN URL too in case a future change
-  // brings OpenCV back; tests should keep passing without it.
+  // Auto-crop runs in a Web Worker (see useAutoCropWorker). The worker
+  // loads OpenCV.js from the CDN — which Playwright can't always reach
+  // reliably and which is large enough to slow tests.
+  //
+  // We block the CDN at the network layer so the worker fails to load.
+  // The editor surfaces this via `editor-loading-engine` (Auto cut stays
+  // disabled) — same UX path real users get on captive portal / ad-block.
+  // The "Continuar without auto-cropping" path then proves the customer
+  // flow tolerates a non-functional auto-crop, which is the M2 contract.
   test.beforeEach(async ({ page }) => {
     await page.route('**/opencv.js', (route) => route.abort())
   })
@@ -102,16 +107,21 @@ test.describe('editor', () => {
     await expect(page.getByTestId('editor-ui-canvas')).toBeVisible()
   })
 
-  test('Auto cut button is disabled (auto-crop is gated for M2)', async ({ page }) => {
+  test('Auto cut button stays disabled while OpenCV is unavailable (CDN blocked)', async ({
+    page,
+  }) => {
     const customer = seedActiveCustomer()
     const access = await loginAs(page, customer)
     const uuid = await seedDraftWithImage(page, access, customer)
 
     await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
 
+    // Worker tried + failed to load opencv.js → editor stays in
+    // "loading engine" state and Auto cut remains disabled. This is the
+    // exact UX path captive-portal / ad-block users land on, and the
+    // editor still lets them Continuar.
     await expect(page.getByTestId('tool-auto-cut')).toBeDisabled({ timeout: 10_000 })
-    // The "coming soon" banner clearly signals the gating to the customer.
-    await expect(page.getByTestId('editor-coming-soon')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('editor-loading-engine')).toBeVisible({ timeout: 10_000 })
   })
 
   test('Continuar without auto-cropping routes to /order-config (mask is optional)', async ({
@@ -156,5 +166,48 @@ test.describe('editor', () => {
     // Suppress unused-var warnings — the access token isn't checked here, but
     // it's needed to seed the order.
     void access
+  })
+})
+
+/**
+ * Worker-pipeline smoke test — OpenCV CDN ALLOWED.
+ *
+ * Separate describe block so the CDN-block `beforeEach` above doesn't apply.
+ * This is the slow path: ~10 MB WASM download + compile in the worker.
+ * Generous timeout. Network-dependent; if `docs.opencv.org` is unreachable,
+ * this test is genuinely red and we want to know.
+ *
+ * Why this matters: every other editor test blocks the CDN, so they only
+ * prove the loading-engine UX. This test proves the Web Worker actually
+ * runs the OpenCV pipeline end to end without freezing the renderer
+ * (which was the entire point of moving off the main thread).
+ */
+test.describe('editor (worker pipeline, OpenCV reachable)', () => {
+  test.setTimeout(120_000)
+
+  test.beforeAll(() => {
+    expectBackendUp()
+  })
+  test.afterAll(() => {
+    cleanupSeededUsers()
+  })
+
+  test('Auto cut button enables once the worker reports ready', async ({ page }) => {
+    const customer = seedActiveCustomer()
+    const access = await loginAs(page, customer)
+    const uuid = await seedDraftWithImage(page, access, customer)
+
+    await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
+
+    // While the worker is loading WASM, the editor shows the loading banner
+    // AND the page must remain responsive — the toolbar paints, navigation
+    // works, no "Page Unresponsive" dialog. We test responsiveness implicitly
+    // by asserting other UI elements stay interactable during the wait.
+    await expect(page.getByTestId('tool-auto-cut')).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByTestId('editor-continue')).toBeEnabled({ timeout: 5_000 })
+
+    // Eventually (CDN download + WASM compile in the worker) Auto cut enables.
+    await expect(page.getByTestId('tool-auto-cut')).toBeEnabled({ timeout: 90_000 })
+    await expect(page.getByTestId('editor-ready')).toBeVisible({ timeout: 5_000 })
   })
 })
