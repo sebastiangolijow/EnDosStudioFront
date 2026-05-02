@@ -2,8 +2,8 @@
 
 > **Studio**: YeKo Studio · **Client**: Barcelona print shop selling custom stickers
 > **Stack**: Vue 3 · Vite · TypeScript · Vue Router · Pinia · Tailwind CSS · Axios · Canvas API · OpenCV.js (CDN)
-> **Backend**: separate Django + DRF project at `/Users/cevichesmac/Desktop/yeko_studio/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
-> **Status**: greenfield — no code committed yet. CLAUDE.md is the source of truth until the bootstrap skill runs.
+> **Backend**: separate Django + DRF project at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
+> **Status**: greenfield — no code committed yet. The backend is at M2 (orders + payments + auth shipped, real pricing wired, 48 tests green); this frontend is what closes the loop. CLAUDE.md is the source of truth until the bootstrap skill runs.
 
 This file is the index for any AI agent working on the StickerApp frontend. Read it before doing anything. It captures the YeKo Studio mindset, the design tokens (locked), the tech-stack decisions, the screen inventory, and the conventions we'll follow.
 
@@ -29,27 +29,29 @@ The 1-line filter: *"If a piece of code doesn't make the user faster or the bran
 
 ## 🎯 Project spec digest
 
-A SPA that lets a customer upload a design, watch the app auto-detect the cut line, paint relief zones, preview the result, and place an order. Nine screens, plus admin.
+A SPA that lets a customer upload a design, watch the app auto-detect the cut line, set order specs (material × size × quantity), opt in to relief and varnish, then check out via Stripe.
 
 **Customer flow**:
 
 1. Land on home → "Tu diseño. Tu sticker. Sin límites." → click "Subir mi diseño"
-2. Register / login (or guest if business allows)
+2. Register / login (the design pack mentions guest checkout as a maybe — backend doesn't support it yet; treat as auth-required for MVP)
 3. Upload PNG/JPG → drag-drop with size + format validation
 4. Editor opens → image renders on canvas → click "Auto cut" → OpenCV detects contour → user accepts/refines
-5. Switch to Relief mode → paint zones with brush → undo/clear available
-6. Preview → see final sticker rendering with toggles (Plano / Holográfico / Sobre superficie)
-7. Order config → choose material, size, quantity → see live price estimate
-8. Checkout → shipping address + Stripe payment
-9. Confirmation → order number, link to dashboard
+5. **Relief option**: a checkbox `Con relieve`. If checked, opens a free-text note where the customer describes WHERE the relief should go. **Backend stores the boolean + the note. There is NO drawn relief mask in the MVP.** The drawn-mask feature is deferred.
+6. Order config → choose material (9 options), width × height in mm (multiples of 5, min 25 mm = 2.5 cm), quantity (20–100 000), optional varnish → live price preview via `GET /api/v1/orders/quote/`
+7. Checkout → shipping (recipient name, two street lines, city, postal code, country) + Stripe payment
+8. Confirmation → order UUID, link to history
+9. Order history → list, detail, cancel (only while draft/placed), mark delivered (only when shipped)
 
 **Admin flow**:
-1. Admin orders table → filters (status, date, customer, material) → click row
-2. Order detail → view original image, cut mask, relief mask → download production files → change status
+1. Django admin (already wired) is the day-1 ops UI: list orders with filters, see attached files, transition `paid → in_production → shipped` manually
+2. A Vue admin UI is post-MVP — only build it once the shop owner has used Django admin for at least a week and has specific complaints
 
 **Auth model**:
-- Customers: self-registration (with optional guest checkout fallback)
-- Shop staff / admin: created server-side, log in via the same login screen
+- Customers: self-registration → email verification link → set-password form → can log in
+- Shop staff / admin: created server-side (Django admin, `make superuser`, or a future invite flow), log in via the same login screen
+- The verification email contains a link to `/set-password?token=...&email=...` on this frontend; that view POSTs to the backend's `/api/v1/users/set-password/` endpoint
+- Forgot password: `POST /api/v1/auth/password/reset/` (sends email) → email links to `/reset-password?uid=...&token=...` on this frontend → that view POSTs to `/api/v1/auth/password/reset/confirm/`
 
 **Source of truth**: the design pack PDF at `/Users/cevichesmac/Downloads/Stickerapp Frontend Design Pack.pdf`. Move it to `docs/design-pack.md` (or keep PDF) once we scaffold. The PDF supersedes anything in this CLAUDE.md if they conflict.
 
@@ -153,15 +155,20 @@ src/
 │   ├── layout/                # AppHeader, AppShell, DashboardShell
 │   ├── upload/                # UploadDropzone, FilePreview
 │   ├── editor/                # StickerEditor, EditorToolbar, CanvasStage, InspectorPanel,
-│   │                           # CutOverlay, ReliefOverlay, ZoomControls, ProcessingOverlay
-│   ├── order/                 # MaterialSelector, SizeSelector, QuantityStepper, OrderSummary
-│   └── admin/                 # AdminOrderTable, AdminOrderDetail
+│   │                           # CutOverlay, ZoomControls, ProcessingOverlay
+│   │                           # (ReliefOverlay deferred — no drawn relief mask in MVP)
+│   ├── order/                 # MaterialSelector, SizeInput (width_mm + height_mm),
+│   │                           # QuantityStepper, AddOnsToggle (relief, varnish, design service),
+│   │                           # ReliefNoteField, OrderSummary
+│   └── admin/                 # (post-MVP — Django admin covers M2 ops)
 ├── composables/               # useAuth, useUpload, useOpenCV, useStickerCanvas,
-│                              # useCutDetection, useReliefMask, useOrders
-├── stores/                    # auth.store, sticker.store, order.store, ui.store
+│                              # useCutDetection, useOrders, usePriceQuote
+│                              # (useReliefMask deferred)
+├── stores/                    # auth.store, order.store, ui.store
+│                              # (sticker.store merged into order — drafts ARE orders)
 ├── views/                     # 12 view files matching routes
-├── services/                  # api, auth.service, upload.service, orders.service
-├── types/                     # auth, sticker, order, api
+├── services/                  # api, auth.service, orders.service, files.service
+├── types/                     # auth, order, api
 ├── router/
 │   └── index.ts
 └── styles/
@@ -233,97 +240,191 @@ UI must reflect every state distinctly. The PDF specifies overlay states for the
 
 The Django backend issues JWT tokens via `dj-rest-auth`. Frontend pattern:
 
-- `POST /api/auth/login/` returns `{ access, refresh, user }`
+- `POST /api/v1/auth/login/` returns `{ access, refresh }` (or `access_token`/`refresh_token` depending on dj-rest-auth version — handle both: `r.data.access ?? r.data.access_token`)
 - Store both tokens; default `axios` `Authorization: Bearer <access>`
-- On 401: try `POST /api/auth/token/refresh/`; on refresh failure, force re-login
-- Logout: `POST /api/auth/logout/` + clear local storage
+- On 401: try `POST /api/v1/auth/token/refresh/` with the refresh token; on refresh failure, force re-login
+- Logout: `POST /api/v1/auth/logout/` + clear local storage
 
 The `useAuth` composable owns this; views never touch tokens directly.
 
 ### Customer registration creates inactive users
 
-Per the backend's contract: registration creates `is_active=False, is_verified=False`. The customer receives an email with a setup link → they hit the frontend's `/set-password?token=...&email=...` page → frontend POSTs to `POST /api/v1/users/set-password/` → backend activates the account.
+Per the backend's contract: registration creates `is_active=False, is_verified=False`. The customer receives an email with a setup link → they hit the frontend's `/set-password?token=...&email=...` page → frontend POSTs to `POST /api/v1/users/set-password/` → backend activates the account **and creates the allauth `EmailAddress` row** (without that row, login silently fails — the backend handles this; the frontend just needs to follow the flow).
 
 Frontend handles this via:
-- `RegisterView` → call `POST /api/auth/register/` → show "check your email" message (do NOT auto-login)
+- `RegisterView` → call `POST /api/v1/auth/register/` → show "revisá tu email" message (do NOT auto-login). The backend always returns 200 even for already-registered emails (don't leak account existence) — the UI message must be the same in both cases.
 - `/set-password` route → `SetPasswordView` reads token + email from query string → POSTs to `/api/v1/users/set-password/` → on success, redirects to `/login`
 
 **Gotcha**: the user can't log in until they've completed set-password. Don't try to log them in immediately after register.
 
+### Forgot-password flow
+
+Backend M2 ships a working forgot-password flow via dj-rest-auth + allauth. The reset link emailed to the customer points at the frontend (`{FRONTEND_URL}/reset-password?uid=...&token=...`). The frontend needs:
+
+- A `/reset-password` route → `ResetPasswordView` reads `uid` + `token` from query string, shows a "new password" form, POSTs to `POST /api/v1/auth/password/reset/confirm/` with `{ uid, token, new_password1, new_password2 }`. On success → redirect to `/login` with a "password updated" toast.
+- A "forgot password?" link on the login page → opens a modal or `/forgot-password` route → POSTs `{ email }` to `POST /api/v1/auth/password/reset/` → shows "check your email" message regardless of whether the email exists (no leak).
+
+### Stripe checkout (frontend side)
+
+After `POST /api/v1/orders/{uuid}/checkout/` returns `{ client_secret, payment_intent_id, amount_cents, currency }`:
+
+1. Mount Stripe Elements (`<PaymentElement>`) bound to the `client_secret`. **Don't show the form before the secret arrives — race condition.**
+2. On submit, call `stripe.confirmPayment({ elements, confirmParams: { return_url: ... } })`. Some payment methods redirect (3DS, iDEAL, Bizum, etc.); pass a `return_url` that resolves to the order detail page on this frontend.
+3. The backend webhook flips the order to `paid` asynchronously when Stripe confirms. The frontend should POLL `GET /api/v1/orders/{uuid}/` for ~5–15 seconds after `confirmPayment` resolves and update the UI when status flips. Or just redirect to the order detail page and let it refresh.
+4. The `STRIPE_PUBLISHABLE_KEY` is configured server-side; expose it to the frontend via a small endpoint or via a build-time env var (`VITE_STRIPE_PUBLISHABLE_KEY`). Test cards: `4242 4242 4242 4242` succeeds, `4000 0027 6000 3184` requires 3DS, `4000 0000 0000 0002` declines.
+
+**Stripe is not live yet** as of M2 — backend is wired but the shop owner's Stripe account + test keys land at deploy time. Until then, the checkout endpoint will return a real-looking `client_secret` only if dummy keys are configured; otherwise it returns 502. Plan accordingly: mock the Stripe layer in dev until the keys exist.
+
 ---
 
-## 📡 API contract (from §4.12 of the design pack)
+## 📡 API contract (M2 — what the backend actually ships)
 
-The backend exposes these endpoints. The frontend services file should map 1:1 to this list — no inventing endpoints.
+The backend's URL prefix is `/api/v1/`. There is **no separate** `/api/sticker-drafts/` resource — a draft is just `Order(status="draft")`. There is no separate `/api/admin/...` resource — staff use Django admin (registered in M2) or the same `/api/v1/orders/` endpoints (the queryset is role-scoped server-side: customers see their own, staff see all).
 
-### Auth
-- `POST /api/auth/register/` — creates inactive customer, sends setup email
-- `POST /api/auth/login/` — returns JWT pair
-- `POST /api/auth/logout/` — blacklists refresh token
-- `POST /api/auth/token/refresh/` — refresh JWT
-- `GET  /api/auth/me/` — current user profile
-- `POST /api/v1/users/set-password/` — activate account from email link
+If anything in §4.12 of the design pack contradicts this section, **this section wins** — the design pack predates the backend's M2 implementation.
 
-### Sticker drafts
-- `POST  /api/sticker-drafts/` — create draft
-- `GET   /api/sticker-drafts/:id/` — retrieve
-- `PATCH /api/sticker-drafts/:id/` — update metadata
-- `POST  /api/sticker-drafts/:id/upload-original/` — upload PNG/JPG (multipart)
-- `POST  /api/sticker-drafts/:id/upload-cut-mask/` — upload cut PNG (multipart)
-- `POST  /api/sticker-drafts/:id/upload-relief-mask/` — upload relief PNG (multipart)
+### Auth (`/api/v1/auth/`)
+- `POST /api/v1/auth/register/` — `{ email, password, first_name?, last_name? }` → 200. Creates inactive customer, sends verification email.
+- `POST /api/v1/auth/login/` — `{ email, password }` → `{ access, refresh }` (or `access_token`/`refresh_token` depending on dj-rest-auth version; handle both)
+- `POST /api/v1/auth/logout/`
+- `POST /api/v1/auth/token/refresh/` — `{ refresh }`
+- `POST /api/v1/auth/password/reset/` — `{ email }` → 200 (always, no leak)
+- `POST /api/v1/auth/password/reset/confirm/` — `{ uid, token, new_password1, new_password2 }`
 
-### Orders
-- `POST  /api/orders/` — create from a draft
-- `GET   /api/orders/` — list user's orders
-- `GET   /api/orders/:id/` — order detail
-- `PATCH /api/orders/:id/` — partial update (e.g. shipping)
-- `POST  /api/orders/:id/checkout/` — Stripe PaymentIntent → returns `client_secret`
+### Users (`/api/v1/users/`)
+- `GET   /api/v1/users/me/` — current user profile (replaces `/api/auth/me/`)
+- `POST  /api/v1/users/set-password/` — `{ email, token, password }` activates the account from the verification email link
 
-### Admin
-- `GET   /api/admin/orders/` — admin list (filterable)
-- `GET   /api/admin/orders/:id/` — admin detail
-- `PATCH /api/admin/orders/:id/status/` — change status
+### Orders (`/api/v1/orders/`)
+- `GET    /api/v1/orders/` — paginated `{ count, results: [Order] }`. Customer sees own; staff sees all.
+- `POST   /api/v1/orders/` — empty body → creates a `draft` order owned by the requesting user
+- `GET    /api/v1/orders/{uuid}/` — retrieve
+- `PATCH  /api/v1/orders/{uuid}/` — edit fields (material, dimensions, quantity, add-ons, shipping). **Returns 409 if status != draft.**
+- `POST   /api/v1/orders/{uuid}/place/` — draft → placed. Validates required fields; computes total. Returns 409 / 400 on guard fail.
+- `POST   /api/v1/orders/{uuid}/checkout/` — placed → triggers Stripe `PaymentIntent`. Returns `{ client_secret, payment_intent_id, amount_cents, currency }`. Frontend confirms the payment via Stripe.js.
+- `POST   /api/v1/orders/{uuid}/cancel/` — `{ reason? }` → cancelled. **Customer-only**, only while `{draft, placed}`. (Refunds after `paid` are admin-driven via Stripe dashboard, NOT self-service in M2.)
+- `POST   /api/v1/orders/{uuid}/deliver/` — shipped → delivered. **Customer-only.**
+- `POST   /api/v1/orders/{uuid}/start-production/` — paid → in_production. **Staff-only.**
+- `POST   /api/v1/orders/{uuid}/ship/` — in_production → shipped. **Staff-only.**
 
-**Note on the path mismatch**: `set-password` lives at `/api/v1/users/set-password/` (Django's `users.urls`), while everything else in this contract uses `/api/...`. Sebastián confirmed this is fine — the version prefix is consistent server-side; we'll adjust the API base URL to match whatever the backend ships.
+### Order files (`/api/v1/orders/{uuid}/files/`)
+- `GET    /api/v1/orders/{uuid}/files/` — list files for an order
+- `POST   /api/v1/orders/{uuid}/files/` — multipart upload. Form fields are exactly `kind` and `file` (no other names). `kind ∈ {"original", "die_cut_mask"}` for M2; `"relief_mask"` is reserved for when drawn-relief lands.
+- `DELETE /api/v1/orders/{uuid}/files/{file_uuid}/` — delete (then re-POST to swap; `unique_together(order, kind)` enforces one-per-slot)
+
+### Pricing preview (`/api/v1/orders/quote/`)
+- `GET /api/v1/orders/quote/?material=...&width_mm=...&height_mm=...&quantity=...&with_design_service=...&with_varnish=...&with_relief=...` → `{ total_amount_cents, total_eur, currency }`. Pure function, no DB write — perfect for live updates as the customer drags a slider.
+
+### Stripe webhook (server-only)
+- `POST /api/v1/payments/webhooks/stripe/` — Stripe-only, CSRF-exempt, signature-verified. The frontend never touches this URL.
+
+### HTTP error contract
+- `400` validation
+- `401` not authenticated (refresh JWT and retry, or redirect to login)
+- `403` authenticated but not allowed (customer hitting a staff endpoint, or customer hitting another customer's order)
+- `404` not found / not yours
+- `409` conflict — wrong status for this transition (PATCH on placed, place on non-draft, cancel after paid, deliver before shipped). Render a clear "this order is no longer in a state where you can do that" message.
+- `502` Stripe error during checkout (network or Stripe outage). Retry-friendly.
+
+## 💰 Pricing model (real, locked)
+
+`compute_total_cents()` on the backend is pure and deterministic. The frontend should never duplicate this math — always call `/orders/quote/` for the live total. But for explanation:
+
+```
+total_eur = material_base
+          + (width_cm + height_cm) × 1€
+          + quantity × 1€
+          + (8€ if with_design_service)
+          + (8€ if with_varnish)
+          + (12€ if with_relief)
+```
+
+**Material base prices** (the "Elegir material" picker — gold-standard scenario `holografico, 5×5 cm, q=50` → 110€):
+
+| Material key | Display | Base €  |
+|---|---|---|
+| `vinilo_blanco` | Vinilo blanco | 45 |
+| `vinilo_transparente` | Vinilo transparente | 45 |
+| `holografico` | Vinilo holográfico | 50 |
+| `holografico_transparente` | Vinilo holográfico transparente | 50 |
+| `plateado` | Vinilo plateado | 50 |
+| `dorado` | Vinilo dorado | 50 |
+| `luminiscente` | Vinilo luminiscente | 55 |
+| `eggshell` | Vinilo eggshell | 55 |
+| `eggshell_holografico` | Vinilo eggshell holográfico | 60 |
+
+**Constraints** (frontend should validate before submitting; backend rejects with 400 on violation):
+- `width_mm` and `height_mm`: multiples of 5, ≥ 25 (= 2.5 cm). Display in cm (`mm / 10`).
+- `quantity`: integer, 20 ≤ q ≤ 100 000.
+
+## 🔢 Wire format conventions
+
+The single biggest source of frontend ↔ backend bugs in two-repo projects is field-name and type drift. The backend's contract:
+
+- **UUIDs are named `uuid`, not `id`.** `Order.uuid`, `OrderFile.uuid`, `User.uuid`. Frontend types must mirror this.
+- **Money is integer cents on the wire** (`total_amount_cents: number`). The serializer also exposes `total_eur: string` ("110.00") for display convenience. Use `total_eur` for rendering; never `total_amount_cents / 100` (float precision loss).
+- **Status enums are snake_case strings**: `"draft"`, `"placed"`, `"paid"`, `"in_production"`, `"shipped"`, `"delivered"`, `"cancelled"`. Translate for display (`"En producción"`) but the wire value stays `"in_production"`.
+- **`OrderFile.kind` enum**: `"original"`, `"die_cut_mask"`. Add `"relief_mask"` when the drawn-mask feature ships.
+- **Multipart upload field names are exactly `file` and `kind`**. Anything else is silently dropped.
+
+The `api-contract-check` skill (separate, installed at `~/.claude/skills/api-contract-check/`) enforces these on every change touching the boundary.
 
 ---
 
 ## 🚧 Status (project start)
 
 ### Done
-- ✅ Folder created at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_frontend/`
-- ✅ CLAUDE.md written (this file)
-- ⏳ `bootstrap-stickerapp-frontend` skill (in progress — see `~/.claude/skills/`)
+- Folder created at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endosstudio_frontend/`
+- CLAUDE.md reconciled with backend M2 reality (this file)
+- Bootstrap skill exists at `~/.claude/skills/bootstrap-stickerapp-frontend/`
+- Four supporting skills installed: `canvas-editor-system`, `opencv-js-integration`, `api-contract-check`, `playwright-frontend-test`
+- Backend at M2: 48 tests green, real pricing wired, real auth + email + reset flow shipped
 
-### Next (after the skill exists)
-- Run the bootstrap skill to lay down Phase 1 (Vite + Tailwind + tokens.css + router + Pinia stores + base layout + UI components)
-- Move the design pack PDF into `docs/`
-- First view to implement: `HomeView` (matches the mockup hero)
+### Next (in order)
+1. **Run the bootstrap skill** to lay down Phase 1: Vite + TS + Tailwind + tokens.css + router + Pinia stores + base layout + UI components + Playwright config
+2. **Move the design pack PDF into `docs/`** so it lives in the repo
+3. **First view: `HomeView`** (the hero from the mockup) — pure styling, no backend calls; gets the brand visible fast
+4. **`AuthFlow` views**: `RegisterView`, `LoginView`, `SetPasswordView`, `ResetPasswordView`. These exercise the real backend; first contract-bound code. Add Playwright spec for the full register → set-password → login → /me/ roundtrip (the M2 backend gate test mirrored client-side).
+5. **Order creation flow**: upload → editor (auto-crop via OpenCV.js) → spec config → quote → place → checkout. This is where the canvas + opencv skills earn their keep.
+6. **History + cancel** — small.
+
+### Stripe is gated on deploy
+The backend has the checkout endpoint wired (`POST /api/v1/orders/{uuid}/checkout/`) but it returns 502 without real Stripe keys. Mock the Stripe layer in dev (the `playwright-frontend-test` skill describes the pattern). The shop owner's Stripe account + test keys land at deploy time, not now.
 
 ### TODO (radar)
-- Decide hosting (Vercel / Netlify / self-hosted via the backend's nginx?)
-- Decide guest checkout: yes or no? (PDF says "if business allows")
-- OpenCV.js version pinning (currently using `4.x` from CDN — pin to a specific version once we test)
+- **Auto-crop reference site URL**: the user has identified an existing shop with the exact UX they want for auto-crop. They'll share the URL when canvas/OpenCV work starts — ASK BEFORE designing that component from first principles.
+- Decide hosting (Vercel / Netlify / self-hosted alongside the backend's nginx?)
+- OpenCV.js version pinning (currently `4.x` from CDN — pin to a specific version once we've tested with it)
 - Fonts: pick Inter vs Satoshi vs Manrope — design pack says "or similar"
+- Email backend in production: backend uses the SMTP env vars (`EMAIL_HOST`, `EMAIL_HOST_USER`, ...) — confirm Gmail SMTP / SES / Mailgun before deploy
 
 ---
 
 ## 🔗 Reference: backend codebase
 
-`/Users/cevichesmac/Desktop/yeko_studio/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
+`/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
 
-The Django backend is a sibling project. Read its `CLAUDE.md` to understand the API contract, auth flow (especially the allauth EmailAddress trap), and the file-upload model.
+The Django backend is a sibling project. Its `CLAUDE.md` is the source of truth for: API surface, auth flow (allauth EmailAddress trap, JWT), file-upload model, real pricing constants, the gold-standard scenario (`holografico, 5×5 cm, q=50` → 110€).
 
-The backend is greenfield too — when this frontend session runs, the backend may also be unbootstrapped. Don't assume the API is live; mock as needed and wire to the real endpoints when both sides are ready.
+When in doubt about an endpoint shape, **read the backend's serializer file**, not the design pack — the M2 implementation is what's real. The relevant files:
+
+- `apps/orders/serializers.py` — `OrderSerializer`, `OrderFileSerializer`, `PriceQuoteSerializer`, `CheckoutResponseSerializer`
+- `apps/orders/views.py` — `OrderViewSet`, `OrderFileViewSet`, `PriceQuoteView`
+- `apps/orders/services.py` — pricing constants, transition guards
+- `apps/orders/models.py` — Order, OrderFile, status/material choices, dimension/quantity bounds
+- `apps/users/views.py` — `RegisterView`, `SetPasswordView`, `CurrentUserView`
+- `apps/users/auth_urls.py` — full auth URL set
+- `apps/payments/views.py` — `StripeWebhookView` (frontend doesn't touch this)
 
 ---
 
 ## 📂 Files / paths to know
 
-- **Design pack (source of truth)**: `/Users/cevichesmac/Downloads/Stickerapp Frontend Design Pack.pdf` (move into `docs/` at first scaffold)
-- **Sibling backend project**: `/Users/cevichesmac/Desktop/yeko_studio/endossutdio_backend/`
+- **Design pack (source of truth for visuals + brand)**: `/Users/cevichesmac/Downloads/Stickerapp Frontend Design Pack.pdf` (move into `docs/` at first scaffold). Where the design pack disagrees with this CLAUDE.md or the backend's M2 implementation, **the backend wins on API/data contracts** and **the design pack wins on visuals**.
+- **Sibling backend project**: `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/`
 - **YeKo Studio context**: `/Users/cevichesmac/Desktop/yeko_studio/yeko_studio_context.md`
 - **Bootstrap skill**: `~/.claude/skills/bootstrap-stickerapp-frontend/`
+- **Supporting skills**: `~/.claude/skills/canvas-editor-system/`, `~/.claude/skills/opencv-js-integration/`, `~/.claude/skills/api-contract-check/`, `~/.claude/skills/playwright-frontend-test/`
 - **Mockup image** (optional reference): the screenshot the user provided in the bootstrap session — captures landing + editor + upload + material selector + dashboard layouts in one frame
 
 ---
