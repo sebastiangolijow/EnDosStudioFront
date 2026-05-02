@@ -20,7 +20,7 @@
  */
 import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { type ImagePoint } from './useAutoCrop'
-import { DEFAULT_PALETTE, type MaskPalette } from '@/utils/materialColors'
+import { DEFAULT_PALETTE, type MaskPalette, onTextureReady } from '@/utils/materialColors'
 
 export interface ImageState {
   source: HTMLImageElement
@@ -165,16 +165,29 @@ export function useCanvasEditor() {
     }
     ctx.closePath()
 
-    // Resolve fill — palette.fill can be a flat string OR a gradient factory.
-    // Gradient factories need the polygon bbox so the gradient stops land
-    // inside the halo (a canvas-sized gradient would clip them off-shape).
+    // Resolve fill. palette.fill can be:
+    //   - a flat CSS string (default brand orange, simple metallic)
+    //   - a factory returning a gradient/pattern/string (legacy shape)
+    //   - a factory returning a ResolvedFill (gradient/pattern + opacity)
+    // The third form lets pattern-based materials (holographic) carry their
+    // own globalAlpha so the texture doesn't fully obscure the artwork —
+    // patterns can't bake alpha into their fillStyle directly.
     const palette = maskPalette.value
-    const fillSpec =
+    const bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+    const raw =
       typeof palette.fill === 'function'
-        ? palette.fill(ctx, { x: minX, y: minY, width: maxX - minX, height: maxY - minY })
+        ? palette.fill(ctx, bbox)
         : palette.fill
-    ctx.fillStyle = fillSpec
+    const resolved =
+      typeof raw === 'object' && raw !== null && 'style' in raw && 'opacity' in raw
+        ? (raw as { style: string | CanvasGradient | CanvasPattern; opacity: number })
+        : { style: raw as string | CanvasGradient | CanvasPattern, opacity: 1 }
+
+    const priorAlpha = ctx.globalAlpha
+    ctx.globalAlpha = priorAlpha * resolved.opacity
+    ctx.fillStyle = resolved.style
     ctx.fill()
+    ctx.globalAlpha = priorAlpha
     ctx.strokeStyle = palette.stroke
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
@@ -347,12 +360,18 @@ export function useCanvasEditor() {
 
   // === Lifecycle ===
 
+  let unsubTextureReady: (() => void) | null = null
+
   onMounted(() => {
     resizeAll()
     if (stack.value) {
       resizeObserver = new ResizeObserver(() => resizeAll())
       resizeObserver.observe(stack.value)
     }
+    // Repaint the mask once the holographic texture finishes loading. If
+    // a customer picks "holográfico" before the image arrives the halo
+    // would be stuck on the flat fallback otherwise.
+    unsubTextureReady = onTextureReady(() => drawMaskLayer())
   })
 
   onBeforeUnmount(() => {
@@ -360,6 +379,8 @@ export function useCanvasEditor() {
     resizeObserver = null
     if (pendingFrame) cancelAnimationFrame(pendingFrame)
     if (pendingResizeFrame) cancelAnimationFrame(pendingResizeFrame)
+    unsubTextureReady?.()
+    unsubTextureReady = null
   })
 
   return {
