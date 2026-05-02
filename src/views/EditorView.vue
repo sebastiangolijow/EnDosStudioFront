@@ -9,7 +9,6 @@ import EditorInspector from '@/components/editor/EditorInspector.vue'
 import { ordersService } from '@/services/orders.service'
 import { filesService } from '@/services/files.service'
 import { type AutoCropOptions, useAutoCrop } from '@/composables/useAutoCrop'
-import { useOpenCV } from '@/composables/useOpenCV'
 import { useToast } from '@/composables/useToast'
 import { type Order, type OrderFile } from '@/types/order'
 
@@ -42,8 +41,21 @@ const cropOptions = ref<AutoCropOptions>({
 })
 const maskVisible = ref<boolean>(true)
 
-const { isReady: openCvReady, error: openCvError } = useOpenCV()
 const { isProcessing, run: runAutoCrop, error: autoCropError } = useAutoCrop()
+
+/**
+ * Auto-crop is gated for M2. The OpenCV.js WASM bundle (~10 MB) blocks the
+ * main thread on first compile long enough that Chrome marks the renderer
+ * "Page Unresponsive", even with lazy loading. The proper fix is a Web
+ * Worker (per the opencv-js-integration skill) — not blocking M2.
+ *
+ * The pipeline + composables stay intact (useOpenCV, useAutoCrop, mask
+ * render + export) so flipping this back on is a small change. To re-enable:
+ *   1. Worker-ize the pipeline (opencv-js-integration skill).
+ *   2. Or: replace these stubs with `useOpenCV()` and accept the ~15s freeze.
+ */
+const openCvReady = ref(false)
+const openCvError = ref<string | null>(null)
 
 // === Image hydration ===
 
@@ -279,18 +291,16 @@ onMounted(bootstrapEditor)
         >
           {{ autoCropError }}
         </div>
-        <div
-          v-else-if="!openCvReady"
-          class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
-          data-testid="editor-opencv-loading"
-        >
-          Cargando motor de detección…
-        </div>
+        <!-- Auto-crop is gated for M2 (see AUTO_CROP_ENABLED in script).
+             The UI keeps the toolbar + sliders so the customer can preview
+             where the controls will land; "coming soon" sets expectations
+             clearly. Continuar still works without a mask. -->
         <div
           v-else
           class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
+          data-testid="editor-coming-soon"
         >
-          Hacé clic en <strong class="text-primary">Auto cut</strong> para detectar el contorno automáticamente.
+          El recorte automático llega pronto. Por ahora podés continuar y elegir material y tamaño.
         </div>
       </div>
 

@@ -73,15 +73,10 @@ test.describe('editor', () => {
   test.setTimeout(60_000)
   test.describe.configure({ mode: 'serial' })
 
-  // The editor's index.html includes a synchronous-ish script tag for the
-  // OpenCV.js CDN (~10 MB). In Playwright tests the script HANGS the page so
-  // hard that even locator polling stalls — the browser process appears stuck
-  // on "loading subresource". Block the CDN so the editor renders without
-  // OpenCV; the OpenCV-not-loaded path is exactly what we want to assert
-  // for the scaffolding tests anyway. Tests that need a real auto-crop run
-  // would need to (a) preload OpenCV in a pre-spec hook or (b) mock the
-  // useAutoCrop composable. M2 doesn't ship those — we cover the canvas +
-  // scaffolding here.
+  // Auto-crop is gated for M2 (see EditorView script comment). The editor
+  // ships with a "coming soon" banner where OpenCV would otherwise load.
+  // Belt-and-suspenders: block the CDN URL too in case a future change
+  // brings OpenCV back; tests should keep passing without it.
   test.beforeEach(async ({ page }) => {
     await page.route('**/opencv.js', (route) => route.abort())
   })
@@ -98,9 +93,6 @@ test.describe('editor', () => {
     const access = await loginAs(page, customer)
     const uuid = await seedDraftWithImage(page, access, customer)
 
-    // Don't wait for full `load` — the OpenCV CDN script is ~10MB and would
-    // hang the test. domcontentloaded is enough to render the toolbar/canvas;
-    // the OpenCV-ready banner has its own explicit check.
     await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
 
     // Toolbar shows the Auto cut tool
@@ -110,19 +102,16 @@ test.describe('editor', () => {
     await expect(page.getByTestId('editor-ui-canvas')).toBeVisible()
   })
 
-  test('Auto cut button is disabled while OpenCV is unavailable (CDN blocked in tests)', async ({
-    page,
-  }) => {
+  test('Auto cut button is disabled (auto-crop is gated for M2)', async ({ page }) => {
     const customer = seedActiveCustomer()
     const access = await loginAs(page, customer)
     const uuid = await seedDraftWithImage(page, access, customer)
 
     await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
 
-    // CDN is blocked (see beforeEach). The composable polls window.cv for up
-    // to 30s before declaring failure — so we just check the button stays
-    // disabled, which is the real condition the customer cares about.
     await expect(page.getByTestId('tool-auto-cut')).toBeDisabled({ timeout: 10_000 })
+    // The "coming soon" banner clearly signals the gating to the customer.
+    await expect(page.getByTestId('editor-coming-soon')).toBeVisible({ timeout: 10_000 })
   })
 
   test('Continuar without auto-cropping routes to /order-config (mask is optional)', async ({
@@ -132,9 +121,6 @@ test.describe('editor', () => {
     const access = await loginAs(page, customer)
     const uuid = await seedDraftWithImage(page, access, customer)
 
-    // Don't wait for full `load` — the OpenCV CDN script is ~10MB and would
-    // hang the test. domcontentloaded is enough to render the toolbar/canvas;
-    // the OpenCV-ready banner has its own explicit check.
     await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
     // Wait for the editor body to render (loading state out)
     await expect(page.getByTestId('tool-auto-cut')).toBeVisible()
@@ -162,9 +148,6 @@ test.describe('editor', () => {
     const orders = seedOrdersForCustomer(customer, ['placed'])
     const uuid = orders[0].uuid
 
-    // Don't wait for full `load` — the OpenCV CDN script is ~10MB and would
-    // hang the test. domcontentloaded is enough to render the toolbar/canvas;
-    // the OpenCV-ready banner has its own explicit check.
     await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
 
     // The view sees the order is past 'draft' and forwards.
