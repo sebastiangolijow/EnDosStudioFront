@@ -154,7 +154,7 @@ test.describe('checkout', () => {
     page,
   }) => {
     const customer = seedActiveCustomer()
-    const access = await loginAs(page, customer)
+    await loginAs(page, customer)
     // Seed a paid order using the lifecycle helper
     const { seedOrdersForCustomer } = await import('./helpers/backend')
     const orders = seedOrdersForCustomer(customer, ['paid'])

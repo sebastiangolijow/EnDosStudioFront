@@ -49,11 +49,10 @@ async function onContinue() {
     // 2. Upload the original image as the first OrderFile
     await filesService.upload(draft.uuid, 'original', selectedFile.value)
 
-    // 3. Move to step 3 (material/size/quantity). The editor (step 2) is
-    //    not built yet — it would normally sit between upload and config but
-    //    until the canvas/OpenCV work lands we skip it. The customer can
-    //    return to /editor/{uuid} from /dashboard once the editor exists.
-    router.push({ name: 'order-config', params: { uuid: draft.uuid } })
+    // 3. Move to step 2 (editor). The editor lets the customer run the
+    //    auto-detect contour pipeline before they pick material/size in step 3.
+    //    They can also Continuar without auto-cropping — the mask is optional.
+    router.push({ name: 'editor', params: { uuid: draft.uuid } })
   } catch (e) {
     // The Axios interceptor handles 401 (refresh + retry, then logout). Any
     // other error reaches us here.
