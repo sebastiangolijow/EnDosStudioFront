@@ -178,6 +178,10 @@ export function useAutoCropWorker() {
             progressMessage.value = msg
           },
         })
+        // Snapshot `options` to a plain object — callers commonly pass a
+        // Vue reactive ref's .value, which is a Proxy. Proxies aren't
+        // structured-cloneable; postMessage would throw DataCloneError.
+        // Spreading into a fresh object strips the reactivity wrapper.
         w.postMessage({
           kind: 'auto-crop',
           requestId,
@@ -186,7 +190,7 @@ export function useAutoCropWorker() {
           workingHeight,
           naturalWidth: image.naturalWidth,
           naturalHeight: image.naturalHeight,
-          options,
+          options: { ...options },
         })
       })
 

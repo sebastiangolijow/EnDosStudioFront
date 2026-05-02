@@ -210,4 +210,53 @@ test.describe('editor (worker pipeline, OpenCV reachable)', () => {
     await expect(page.getByTestId('tool-auto-cut')).toBeEnabled({ timeout: 90_000 })
     await expect(page.getByTestId('editor-ready')).toBeVisible({ timeout: 5_000 })
   })
+
+  test('clicking Auto cut runs the pipeline and draws a mask on the canvas', async ({ page }) => {
+    const customer = seedActiveCustomer()
+    const access = await loginAs(page, customer)
+    const uuid = await seedDraftWithImage(page, access, customer)
+
+    await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
+    await expect(page.getByTestId('tool-auto-cut')).toBeEnabled({ timeout: 90_000 })
+
+    // The base canvas is the first <canvas> in the canvas-stack. Before
+    // Auto cut, the mask layer (second canvas) should be empty.
+    const maskBefore = await page.evaluate(() => {
+      const canvases = document.querySelectorAll('.canvas-stack > canvas')
+      const mask = canvases[1] as HTMLCanvasElement | undefined
+      if (!mask) return -1
+      const ctx = mask.getContext('2d')!
+      const data = ctx.getImageData(0, 0, mask.width, mask.height).data
+      let n = 0
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) n++
+      return n
+    })
+    expect(maskBefore).toBe(0)
+
+    await page.getByTestId('tool-auto-cut').click()
+
+    // Either the pipeline draws a mask OR the fixture has no contour
+    // (our purple-square fixture is uniform — Canny might not find an edge).
+    // Both outcomes are valid; we accept either as proof the pipeline ran
+    // without throwing DataCloneError or similar regressions.
+    const result = await Promise.race([
+      page.getByTestId('editor-no-contour').waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'no-contour'),
+      page
+        .waitForFunction(
+          () => {
+            const canvases = document.querySelectorAll('.canvas-stack > canvas')
+            const mask = canvases[1] as HTMLCanvasElement | undefined
+            if (!mask) return false
+            const ctx = mask.getContext('2d')!
+            const data = ctx.getImageData(0, 0, mask.width, mask.height).data
+            for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return true
+            return false
+          },
+          { timeout: 30_000 },
+        )
+        .then(() => 'mask-drawn'),
+    ])
+
+    expect(['no-contour', 'mask-drawn']).toContain(result)
+  })
 })

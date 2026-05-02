@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppStepper from '@/components/ui/AppStepper.vue'
@@ -112,8 +112,13 @@ async function loadImageIntoEditor(src: string) {
   await canvasRef.value?.loadImage(src)
   // Decode again into a separate Image() — cheap because the bytes are cached
   // by the browser. This gives us the natural-resolution source for OpenCV.
+  // Same crossOrigin caveat as in useCanvasEditor.loadImage: blob:/data: URLs
+  // must NOT have crossOrigin set, or the browser treats the CORS check as
+  // failed against an empty origin and silently kills the load.
   const img = new Image()
-  img.crossOrigin = 'anonymous'
+  if (!src.startsWith('blob:') && !src.startsWith('data:')) {
+    img.crossOrigin = 'anonymous'
+  }
   await new Promise<void>((resolve, reject) => {
     img.onload = () => resolve()
     img.onerror = () => reject(new Error('decode failed'))
@@ -193,12 +198,26 @@ async function bootstrapEditor() {
       router.push('/upload')
       return
     }
+
+    // Flip isLoading=false BEFORE fetching the image. Why: the editor body
+    // (and the CanvasStage inside it) is gated behind `v-if="!isLoading"`,
+    // so the canvas component only mounts once isLoading is false. If we
+    // tried to push the image into canvasRef.value while isLoading was still
+    // true, canvasRef.value would be null and the optional-chained call
+    // would silently no-op — the canvas would mount empty and stay empty.
+    //
+    // The CanvasStage shows its own "Cargando imagen…" overlay while
+    // `image` is null, so flipping isLoading early doesn't hide the visual
+    // feedback — it just lets the canvas exist in time to receive the image.
+    isLoading.value = false
+    await nextTick()
+
     const localUrl = await fetchAsObjectUrl(original)
     await loadImageIntoEditor(localUrl)
-  } catch {
+  } catch (e) {
+    console.error('[editor] bootstrap failed:', e)
     toast.error('No pudimos cargar tu pedido.')
     router.push('/dashboard')
-  } finally {
     isLoading.value = false
   }
 }

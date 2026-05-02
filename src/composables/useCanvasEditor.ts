@@ -235,9 +235,13 @@ export function useCanvasEditor() {
   /** Load an image into the base layer from a URL (objectURL OR remote URL). */
   async function loadImage(src: string): Promise<void> {
     const img = new Image()
-    // crossOrigin='anonymous' so the canvas isn't tainted when we cv.imread it
-    // later (CORS-tainted canvases throw on getImageData).
-    img.crossOrigin = 'anonymous'
+    // crossOrigin='anonymous' is needed for remote URLs so the canvas isn't
+    // CORS-tainted when we cv.imread it later. But it MUST NOT be set on
+    // blob:/data: URLs — they have no real origin and the browser treats
+    // the CORS check as a failure, killing the load silently.
+    if (!src.startsWith('blob:') && !src.startsWith('data:')) {
+      img.crossOrigin = 'anonymous'
+    }
     await new Promise<void>((resolve, reject) => {
       img.onload = () => resolve()
       img.onerror = () => reject(new Error('No se pudo cargar la imagen'))
