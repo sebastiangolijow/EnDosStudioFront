@@ -97,15 +97,28 @@ export function useCanvasEditor() {
    * Resize a single canvas to match its parent box at DPR resolution.
    * Sets the bitmap size in real pixels, then scales the context so all
    * drawing is in CSS pixels. Per `canvas-editor-system` skill.
+   *
+   * Returns true if the bitmap dimensions actually changed. Returning false
+   * lets the caller skip a redraw — and breaks the ResizeObserver loop that
+   * sub-pixel rounding can trigger (write `canvas.width = 1280` → DOM lays
+   * out → RO fires → we read 1280.0001 → write 1280 again → RO fires…).
    */
-  function resizeCanvas(canvas: HTMLCanvasElement) {
+  function resizeCanvas(canvas: HTMLCanvasElement): boolean {
     const dpr = window.devicePixelRatio || 1
     const rect = canvas.getBoundingClientRect()
-    canvas.width = Math.round(rect.width * dpr)
-    canvas.height = Math.round(rect.height * dpr)
+    const targetW = Math.round(rect.width * dpr)
+    const targetH = Math.round(rect.height * dpr)
+
+    // Skip if nothing meaningful changed. Both dimensions must match — a
+    // viewport rotation could change just one.
+    if (canvas.width === targetW && canvas.height === targetH) return false
+
+    canvas.width = targetW
+    canvas.height = targetH
     const ctx = canvas.getContext('2d')!
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.scale(dpr, dpr)
+    return true
   }
 
   // === Per-layer drawing ===
@@ -181,21 +194,40 @@ export function useCanvasEditor() {
 
   // === Resize ===
 
+  let pendingResizeFrame = 0
+
+  /**
+   * Apply pending resizes inside an rAF so multiple ResizeObserver fires
+   * coalesce into one pass. Without this, a layout that ripples sizes
+   * across two frames can wedge the observer in a tight loop and tank the
+   * tab with RESULT_CODE_HUNG.
+   *
+   * Inside the rAF: only redraw if at least one canvas's bitmap actually
+   * changed. Otherwise we'd be repainting megabytes for nothing — and the
+   * sub-pixel rounding loop wouldn't terminate.
+   */
   function resizeAll() {
-    if (baseCanvas.value) resizeCanvas(baseCanvas.value)
-    if (maskCanvas.value) resizeCanvas(maskCanvas.value)
-    if (uiCanvas.value) resizeCanvas(uiCanvas.value)
+    if (pendingResizeFrame) return
+    pendingResizeFrame = requestAnimationFrame(() => {
+      pendingResizeFrame = 0
+      let changed = false
+      if (baseCanvas.value && resizeCanvas(baseCanvas.value)) changed = true
+      if (maskCanvas.value && resizeCanvas(maskCanvas.value)) changed = true
+      if (uiCanvas.value && resizeCanvas(uiCanvas.value)) changed = true
 
-    // Recompute fit using the current CSS size of the base canvas.
-    if (baseCanvas.value) {
-      const rect = baseCanvas.value.getBoundingClientRect()
-      recomputeFit(rect.width, rect.height)
-    }
+      if (!changed) return
 
-    // The bitmap was wiped — redraw all three layers.
-    drawBaseLayer()
-    drawMaskLayer()
-    drawUiLayer()
+      // Recompute fit using the current CSS size of the base canvas.
+      if (baseCanvas.value) {
+        const rect = baseCanvas.value.getBoundingClientRect()
+        recomputeFit(rect.width, rect.height)
+      }
+
+      // The bitmap was wiped — redraw all three layers.
+      drawBaseLayer()
+      drawMaskLayer()
+      drawUiLayer()
+    })
   }
 
   // === Public ops ===
@@ -298,6 +330,7 @@ export function useCanvasEditor() {
     resizeObserver?.disconnect()
     resizeObserver = null
     if (pendingFrame) cancelAnimationFrame(pendingFrame)
+    if (pendingResizeFrame) cancelAnimationFrame(pendingResizeFrame)
   })
 
   return {
