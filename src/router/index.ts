@@ -51,13 +51,13 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
-    path: '/order-config',
+    path: '/order-config/:uuid',
     name: 'order-config',
     component: () => import('@/views/OrderConfigView.vue'),
     meta: { requiresAuth: true },
   },
   {
-    path: '/checkout',
+    path: '/checkout/:uuid',
     name: 'checkout',
     component: () => import('@/views/CheckoutView.vue'),
     meta: { requiresAuth: true },

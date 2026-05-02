@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
+import heroSticker from '@/assets/examples/hero-sticker.jpeg'
 
 const router = useRouter()
 
@@ -74,21 +75,20 @@ const inspiration = Array.from({ length: 6 }, (_, i) => ({ id: i }))
           class="absolute inset-0 bg-gradient-to-br from-violet-900/30 via-bg to-cyan-900/20"
           aria-hidden="true"
         />
-        <!-- Orange glow halo -->
+        <!-- Orange glow halo behind the sticker -->
         <div
           class="absolute inset-0 bg-orange-glow"
           aria-hidden="true"
         />
-        <!-- Sticker placeholder — replace with the holographic hero asset
-             from /docs/mockups.jpeg when the asset pipeline lands. -->
-        <div class="relative flex h-full items-center justify-center">
-          <div
-            class="size-[60%] rounded-full bg-holographic opacity-80 blur-sm"
-            aria-hidden="true"
-          />
-          <p class="absolute bottom-6 left-1/2 -translate-x-1/2 text-xs uppercase tracking-widest text-text-muted">
-            sticker hero · placeholder
-          </p>
+        <!-- Hero sticker — sample of what customers can produce. -->
+        <div class="relative flex h-full items-center justify-center p-6">
+          <img
+            :src="heroSticker"
+            alt="Ejemplo de sticker holográfico personalizado"
+            class="size-full max-h-[90%] object-contain drop-shadow-[0_20px_60px_rgba(255,61,10,0.35)]"
+            loading="eager"
+            decoding="async"
+          >
         </div>
       </div>
     </div>

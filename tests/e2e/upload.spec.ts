@@ -83,12 +83,12 @@ test.describe('upload', () => {
     await expect(continueBtn).toBeEnabled()
     await continueBtn.click()
 
-    // Should land on /editor/{uuid}
-    await expect(page).toHaveURL(/\/editor\/[0-9a-f-]{36}$/, { timeout: 10_000 })
+    // Should land on /order-config/{uuid} (the editor is skipped until built)
+    await expect(page).toHaveURL(/\/order-config\/[0-9a-f-]{36}$/, { timeout: 10_000 })
 
     // Verify the backend has the draft + file attached
     const url = page.url()
-    const orderUuid = url.match(/\/editor\/([0-9a-f-]{36})$/)![1]
+    const orderUuid = url.match(/\/order-config\/([0-9a-f-]{36})$/)![1]
 
     const orderRes = await page.request.get(
       `http://localhost:8000/api/v1/orders/${orderUuid}/`,
