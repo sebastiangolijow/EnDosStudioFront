@@ -35,14 +35,15 @@ export const DEFAULT_PALETTE: MaskPalette = {
 }
 
 /**
- * Build a holographic-style gradient: cyan → violet → pink → cyan,
- * rotated through the polygon's bounding box. Same color stops as the
- * `bg-holographic` Tailwind class used by MaterialCard so the halo
- * matches the swatch.
+ * Holographic gradient — green-mint → cyan → white → pink → peach.
+ * 5 saturated stops on the diagonal mimic the iridescent oil-slick look
+ * of physical holographic vinyl. Compare to the reference shop's editor:
+ * the bleed clearly cycles through several colors edge-to-edge, not
+ * just two. We don't have a real holographic.png pattern asset yet, so
+ * the linear gradient is the best in-canvas approximation.
  */
 function holographicFill(alpha: number) {
   return (ctx: CanvasRenderingContext2D, bbox: MaskBBox): CanvasGradient => {
-    // Diagonal gradient — top-left to bottom-right — covers the polygon.
     const grad = ctx.createLinearGradient(
       bbox.x,
       bbox.y,
@@ -50,22 +51,24 @@ function holographicFill(alpha: number) {
       bbox.y + bbox.height,
     )
     const a = alpha.toFixed(2)
-    grad.addColorStop(0.0, `rgba(125, 211, 252, ${a})`)   // cyan-300
-    grad.addColorStop(0.33, `rgba(196, 181, 253, ${a})`)  // violet-300
-    grad.addColorStop(0.66, `rgba(244, 114, 182, ${a})`)  // pink-400
-    grad.addColorStop(1.0, `rgba(125, 211, 252, ${a})`)   // back to cyan
+    grad.addColorStop(0.0, `rgba(110, 231, 183, ${a})`)  // emerald-300 (mint)
+    grad.addColorStop(0.25, `rgba(125, 211, 252, ${a})`) // sky-300 (cyan)
+    grad.addColorStop(0.5, `rgba(255, 255, 255, ${a})`)  // white highlight
+    grad.addColorStop(0.75, `rgba(244, 114, 182, ${a})`) // pink-400
+    grad.addColorStop(1.0, `rgba(253, 186, 116, ${a})`)  // orange-300 (peach)
     return grad
   }
 }
 
-/** Metallic linear gradient — light → mid → dark, top to bottom. */
-function metallicFill(stops: [string, string, string], alpha: number) {
+/** Metallic gradient — supports 3+ stops, light → mid → dark, top to bottom. */
+function metallicFill(stops: string[], alpha: number) {
   return (ctx: CanvasRenderingContext2D, bbox: MaskBBox): CanvasGradient => {
     const grad = ctx.createLinearGradient(bbox.x, bbox.y, bbox.x, bbox.y + bbox.height)
     const a = alpha.toFixed(2)
-    grad.addColorStop(0.0, withAlpha(stops[0], a))
-    grad.addColorStop(0.5, withAlpha(stops[1], a))
-    grad.addColorStop(1.0, withAlpha(stops[2], a))
+    stops.forEach((s, i) => {
+      const t = stops.length === 1 ? 0 : i / (stops.length - 1)
+      grad.addColorStop(t, withAlpha(s, a))
+    })
     return grad
   }
 }
@@ -79,41 +82,46 @@ function withAlpha(hex: string, alpha: string): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
+// Higher alphas than the previous pass — the reference shop's halos are
+// near-opaque so the gradient reads even when it overlays dark artwork.
+// The fill covers the whole polygon (artwork + bleed), so the customer
+// sees what the entire sticker will look like through the material.
 const MATERIAL_PALETTES: Record<Material, MaskPalette> = {
   vinilo_blanco: {
-    fill: metallicFill(['#FFFFFF', '#E5E7EB', '#D1D5DB'], 0.55),
+    fill: metallicFill(['#FFFFFF', '#F3F4F6', '#E5E7EB'], 0.65),
     stroke: '#D1D5DB',
   },
   vinilo_transparente: {
-    fill: 'rgba(148, 163, 184, 0.25)', // flat — "transparente" reads as plain
+    // Subtle wash — "transparente" should look almost see-through.
+    fill: 'rgba(203, 213, 225, 0.30)',
     stroke: '#94A3B8',
   },
   holografico: {
-    fill: holographicFill(0.45),
-    stroke: '#A78BFA', // violet — average of the holographic spectrum
+    fill: holographicFill(0.85),
+    stroke: '#A78BFA',
   },
   holografico_transparente: {
-    fill: holographicFill(0.30),
+    fill: holographicFill(0.55),
     stroke: '#A78BFA',
   },
   plateado: {
-    fill: metallicFill(['#E5E7EB', '#9CA3AF', '#4B5563'], 0.55),
+    fill: metallicFill(['#F3F4F6', '#D1D5DB', '#9CA3AF', '#6B7280'], 0.75),
     stroke: '#6B7280',
   },
   dorado: {
-    fill: metallicFill(['#FDE68A', '#F59E0B', '#92400E'], 0.50),
+    fill: metallicFill(['#FEF3C7', '#FBBF24', '#D97706', '#92400E'], 0.75),
     stroke: '#B45309',
   },
   luminiscente: {
-    fill: metallicFill(['#D9F99D', '#A3E635', '#65A30D'], 0.55),
+    fill: metallicFill(['#ECFCCB', '#BEF264', '#84CC16'], 0.80),
     stroke: '#65A30D',
   },
   eggshell: {
-    fill: metallicFill(['#FEF3C7', '#FDE68A', '#FCD34D'], 0.55),
+    fill: metallicFill(['#FFFBEB', '#FEF3C7', '#FDE68A'], 0.70),
     stroke: '#D4B896',
   },
   eggshell_holografico: {
-    fill: holographicFill(0.40),
+    fill: holographicFill(0.65),
     stroke: '#A5B4FC',
   },
 }
