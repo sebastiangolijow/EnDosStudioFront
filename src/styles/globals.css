@@ -1,0 +1,47 @@
+/*
+ * Global stylesheet.
+ *
+ * Keep this small. Most styling should be Tailwind utilities in components.
+ * This file exists for: (1) Tailwind layer directives, (2) base resets that
+ * Tailwind preflight doesn't cover, (3) typographic defaults that span the app.
+ */
+
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Focus ring uses brand orange; never invisible (a11y rule from CLAUDE.md) */
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  /* Selection picks up brand orange too */
+  ::selection {
+    background-color: rgba(255, 61, 10, 0.35);
+    color: var(--color-text);
+  }
+}
+
+@layer utilities {
+  /* Holographic gradient backgrounds — use sparingly per CLAUDE.md. */
+  .bg-holographic {
+    background-image: var(--gradient-holographic);
+  }
+  .bg-orange-glow {
+    background-image: var(--gradient-orange-glow);
+  }
+  /* Readable on dark backgrounds for muted helper text. */
+  .text-helper {
+    color: var(--color-text-muted);
+  }
+}

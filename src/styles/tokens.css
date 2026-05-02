@@ -1,0 +1,71 @@
+/*
+ * Design tokens — locked from the design pack §2.
+ * Do not introduce new colors or sizes here without updating the pack
+ * and tailwind.config.ts in the same commit.
+ *
+ * Usage: prefer Tailwind utilities (bg-primary, text-text-muted, rounded-lg)
+ * over var(--color-primary) — the CSS variables are for cases where utilities
+ * don't fit (inline SVG attributes, JS-set style strings, etc.).
+ */
+:root {
+  /* === Colors: base === */
+  --color-bg: #050708;
+  --color-surface-1: #111418;
+  --color-surface-2: #1b2027;
+  --color-border: #2a3038;
+  --color-text: #f5f3ef;
+  --color-text-muted: #aeb4bd;
+
+  /* === Colors: brand === */
+  --color-primary: #ff3d0a;
+  --color-primary-hover: #ff5a24;
+  --color-primary-dark: #b92808;
+
+  /* === Colors: holographic accents (use sparingly) === */
+  --color-cyan: #22d3ee;
+  --color-violet: #a855f7;
+  --color-lime: #a3e635;
+
+  /* === Colors: status === */
+  --color-warning: #facc15;
+  --color-success: #22c55e;
+  --color-error: #ef4444;
+
+  /* === Gradients === */
+  --gradient-holographic: linear-gradient(
+    135deg,
+    #22d3ee 0%,
+    #a855f7 38%,
+    #ff3d0a 65%,
+    #a3e635 100%
+  );
+  --gradient-orange-glow: radial-gradient(
+    circle,
+    rgba(255, 61, 10, 0.35) 0%,
+    rgba(255, 61, 10, 0) 70%
+  );
+
+  /* === Radii === */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-full: 999px;
+
+  /* === Shadows / glow === */
+  --shadow-card: 0 12px 40px rgba(0, 0, 0, 0.35);
+  --glow-orange: 0 0 24px rgba(255, 61, 10, 0.45);
+  --glow-cyan: 0 0 24px rgba(34, 211, 238, 0.35);
+
+  /* === Spacing scale (4px base) — Tailwind handles this; here for reference === */
+  /* xs=4, sm=8, md=16, lg=24, xl=32, 2xl=48, 3xl=64 */
+}
+
+/* App-wide defaults derived from tokens. */
+html,
+body,
+#app {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
