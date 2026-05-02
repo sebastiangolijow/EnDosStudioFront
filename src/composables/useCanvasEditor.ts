@@ -20,6 +20,7 @@
  */
 import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { type ImagePoint } from './useAutoCrop'
+import { DEFAULT_PALETTE, type MaskPalette } from '@/utils/materialColors'
 
 export interface ImageState {
   source: HTMLImageElement
@@ -52,6 +53,9 @@ export function useCanvasEditor() {
   const maskPoints = shallowRef<ImagePoint[] | null>(null)
   /** Whether the mask layer is visible. Toggled by EditorInspector. */
   const maskVisible = ref(true)
+  /** Halo + stroke colors. Defaults to brand orange; the editor swaps in a
+   *  material-tinted palette when the customer picks one in the inspector. */
+  const maskPalette = ref<MaskPalette>(DEFAULT_PALETTE)
 
   // === Internals (not reactive) ===
   let resizeObserver: ResizeObserver | null = null
@@ -152,10 +156,12 @@ export function useCanvasEditor() {
     }
     ctx.closePath()
 
-    // Translucent fill + crisp orange stroke for the cut line.
-    ctx.fillStyle = 'rgba(255, 61, 10, 0.15)'
+    // Translucent fill + crisp stroke. Colors come from `maskPalette` so the
+    // halo can preview the chosen material's tone (holographic = teal,
+    // dorado = gold, etc.). Default = brand primary orange.
+    ctx.fillStyle = maskPalette.value.fill
     ctx.fill()
-    ctx.strokeStyle = '#FF3D0A'
+    ctx.strokeStyle = maskPalette.value.stroke
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
     ctx.stroke()
@@ -278,6 +284,11 @@ export function useCanvasEditor() {
     drawMaskLayer()
   }
 
+  function setMaskPalette(palette: MaskPalette): void {
+    maskPalette.value = palette
+    drawMaskLayer()
+  }
+
   /**
    * Render the mask polygon to a Blob at IMAGE-NATURAL resolution, suitable
    * for upload as the `die_cut_mask` OrderFile. The file is opaque-black
@@ -356,6 +367,7 @@ export function useCanvasEditor() {
     setMask,
     clearMask,
     setMaskVisible,
+    setMaskPalette,
     getMaskAsBlob,
     reset,
   }

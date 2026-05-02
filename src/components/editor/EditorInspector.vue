@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { type AutoCropOptions } from '@/composables/useAutoCropWorker'
+import { type Material, MATERIAL_LABELS } from '@/types/order'
 
 interface Props {
   /** Show/hide the mask layer. v-model:mask-visible. */
   maskVisible: boolean
   /** Auto-crop tunables. v-model:options. */
   options: AutoCropOptions
+  /** Currently selected material — drives halo color + persists to draft. */
+  material: Material | ''
+  /** Whether the customer wants relief on this sticker. */
+  withRelief: boolean
+  /** Free-text note describing where relief should go. Shown when withRelief. */
+  reliefNote: string
 }
 
 defineProps<Props>()
@@ -13,7 +20,44 @@ defineProps<Props>()
 defineEmits<{
   'update:maskVisible': [value: boolean]
   'update:options': [value: AutoCropOptions]
+  'update:material': [value: Material | '']
+  'update:withRelief': [value: boolean]
+  'update:reliefNote': [value: string]
 }>()
+
+/**
+ * Materials available for the in-editor compact picker. Same enum the
+ * order-config grid uses; we just present them as a tight scrollable list
+ * so the editor's narrow right rail fits all nine without overflow.
+ *
+ * Single-color thumbnail next to each label is a CSS gradient — replace
+ * with real photos when assets land. Mirrors MaterialCard's SWATCH_CLASSES
+ * but slimmer (24×24 vs. card-aspect-square) for this denser layout.
+ */
+const MATERIALS: Material[] = [
+  'holografico',
+  'holografico_transparente',
+  'vinilo_blanco',
+  'vinilo_transparente',
+  'plateado',
+  'dorado',
+  'luminiscente',
+  'eggshell',
+  'eggshell_holografico',
+]
+
+const SWATCH_CLASSES: Record<Material, string> = {
+  vinilo_blanco: 'bg-gradient-to-br from-white via-gray-200 to-gray-300',
+  vinilo_transparente:
+    'bg-[linear-gradient(45deg,#374151_25%,transparent_25%,transparent_75%,#374151_75%),linear-gradient(45deg,#374151_25%,transparent_25%,transparent_75%,#374151_75%)] bg-[length:8px_8px] bg-[position:0_0,4px_4px]',
+  holografico: 'bg-holographic',
+  holografico_transparente: 'bg-holographic opacity-70',
+  plateado: 'bg-gradient-to-br from-gray-200 via-gray-400 to-gray-600',
+  dorado: 'bg-gradient-to-br from-yellow-200 via-yellow-400 to-amber-600',
+  luminiscente: 'bg-gradient-to-br from-lime-200 via-lime-400 to-lime-600',
+  eggshell: 'bg-gradient-to-br from-amber-50 via-amber-100 to-amber-200',
+  eggshell_holografico: 'bg-gradient-to-br from-cyan-200 via-violet-200 to-pink-200',
+}
 </script>
 
 <template>
@@ -21,6 +65,70 @@ defineEmits<{
     aria-label="Ajustes del recorte"
     class="flex flex-col gap-5 rounded-lg border border-border bg-surface-1 p-5"
   >
+    <!-- ===== Material ===== -->
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
+      Material
+    </h2>
+    <p class="-mt-3 text-xs text-text-muted">
+      El halo de corte usa el color del material elegido.
+    </p>
+    <div class="flex max-h-72 flex-col gap-1 overflow-y-auto pr-1">
+      <button
+        v-for="m in MATERIALS"
+        :key="m"
+        type="button"
+        :class="[
+          'flex w-full items-center gap-3 rounded-md border px-2 py-2 text-left text-sm transition',
+          material === m
+            ? 'border-primary bg-primary/10 text-primary'
+            : 'border-transparent text-text hover:bg-surface-2',
+        ]"
+        :data-testid="`inspector-material-${m}`"
+        :aria-pressed="material === m"
+        @click="$emit('update:material', m)"
+      >
+        <span
+          :class="['size-6 shrink-0 rounded-full border border-border', SWATCH_CLASSES[m]]"
+          aria-hidden="true"
+        />
+        <span class="leading-tight">{{ MATERIAL_LABELS[m] }}</span>
+      </button>
+    </div>
+
+    <hr class="border-border">
+
+    <!-- ===== Relieve ===== -->
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
+      Relieve
+    </h2>
+    <label class="flex items-start gap-3 cursor-pointer">
+      <input
+        type="checkbox"
+        :checked="withRelief"
+        class="mt-0.5 size-4 accent-primary"
+        data-testid="toggle-with-relief"
+        @change="$emit('update:withRelief', ($event.target as HTMLInputElement).checked)"
+      >
+      <span class="flex-1 text-sm text-text">
+        Añadir relieve
+        <span class="block text-xs text-text-muted">
+          Realza zonas específicas del sticker (texto, logo).
+        </span>
+      </span>
+    </label>
+    <textarea
+      v-if="withRelief"
+      :value="reliefNote"
+      placeholder="Indicá dónde querés el relieve (ej: solo el logo, el texto principal…)."
+      rows="3"
+      class="w-full rounded-md border border-border bg-surface-2 p-2 text-sm text-text placeholder:text-text-muted focus:border-primary focus:outline-none"
+      data-testid="relief-note"
+      @input="$emit('update:reliefNote', ($event.target as HTMLTextAreaElement).value)"
+    />
+
+    <hr class="border-border">
+
+    <!-- ===== Vista ===== -->
     <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
       Vista
     </h2>

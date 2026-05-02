@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useCanvasEditor } from '@/composables/useCanvasEditor'
 import type { ImagePoint } from '@/composables/useAutoCrop'
+import type { MaskPalette } from '@/utils/materialColors'
 
 /**
  * Destructure the refs returned by the composable so Vue's `ref="name"`
@@ -21,6 +22,7 @@ const {
   setMask,
   clearMask,
   setMaskVisible,
+  setMaskPalette,
   getMaskAsBlob,
   reset,
 } = useCanvasEditor()
@@ -35,6 +37,7 @@ defineExpose({
   setMask: (points: ImagePoint[]) => setMask(points),
   clearMask: () => clearMask(),
   setMaskVisible: (v: boolean) => setMaskVisible(v),
+  setMaskPalette: (palette: MaskPalette) => setMaskPalette(palette),
   getMaskAsBlob: () => getMaskAsBlob(),
   reset: () => reset(),
   hasImage: () => !!image.value,

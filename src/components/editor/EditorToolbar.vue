@@ -18,17 +18,16 @@ const autoCutDisabled = computed(() => props.isProcessing || !props.isOpenCvRead
 
 /**
  * Tools shown in the toolbar. Per the M2 scope decision (CLAUDE.md "Relief
- * feature scope (M2)"), drawn relief is OUT of MVP — only auto-cut is wired.
- * The rest are stubbed/disabled to match the mockup's visual layout while
- * making the post-MVP work obvious.
+ * feature scope (M2)"), drawn relief is OUT of MVP — relief is an Inspector
+ * checkbox + free-text note instead of a draw-on-canvas tool. The remaining
+ * stub buttons preview where future tools will live.
  */
 const tools = [
-  { id: 'auto-cut',  icon: '✂️',  label: 'Auto cut',         active: true,  disabled: false },
-  { id: 'relieve',   icon: '🖌️', label: 'Dibujar relieve',   active: false, disabled: true },
-  { id: 'borrar',    icon: '🧽',  label: 'Borrar',            active: false, disabled: true },
-  { id: 'zoom',      icon: '🔍',  label: 'Zoom',              active: false, disabled: true },
-  { id: 'deshacer',  icon: '↶',   label: 'Deshacer',          active: false, disabled: true },
-  { id: 'rehacer',   icon: '↷',   label: 'Rehacer',           active: false, disabled: true },
+  { id: 'auto-cut',  icon: '✂️',  label: 'Auto cut',  active: true,  disabled: false },
+  { id: 'borrar',    icon: '🧽',  label: 'Borrar',    active: false, disabled: true },
+  { id: 'zoom',      icon: '🔍',  label: 'Zoom',      active: false, disabled: true },
+  { id: 'deshacer',  icon: '↶',   label: 'Deshacer',  active: false, disabled: true },
+  { id: 'rehacer',   icon: '↷',   label: 'Rehacer',   active: false, disabled: true },
 ]
 </script>
 

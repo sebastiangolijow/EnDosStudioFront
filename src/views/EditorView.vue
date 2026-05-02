@@ -10,7 +10,8 @@ import { ordersService } from '@/services/orders.service'
 import { filesService } from '@/services/files.service'
 import { type AutoCropOptions, useAutoCropWorker } from '@/composables/useAutoCropWorker'
 import { useToast } from '@/composables/useToast'
-import { type Order, type OrderFile } from '@/types/order'
+import { getMaskPalette } from '@/utils/materialColors'
+import { type Material, type Order, type OrderFile } from '@/types/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,6 +42,14 @@ const cropOptions = ref<AutoCropOptions>({
   marginMm: 15, // default bleed margin (typical sticker-print convention)
 })
 const maskVisible = ref<boolean>(true)
+
+// Material + relief state lives in the editor view (not the canvas
+// composable) because it's a draft-Order property, not a canvas concern.
+// Hydrated from the order on bootstrap, persisted via a debounced PATCH on
+// change. Picking a material here pre-fills the order-config card grid.
+const material = ref<Material | ''>('')
+const withRelief = ref<boolean>(false)
+const reliefNote = ref<string>('')
 
 /**
  * Auto-crop runs in a Web Worker. The ~10 MB OpenCV.js WASM compile happens
@@ -168,6 +177,58 @@ watch(cropOptions, () => {
 
 watch(maskVisible, (v) => canvasRef.value?.setMaskVisible(v))
 
+// === Material + relief: persist to draft, repaint halo ===
+
+// Push the chosen material's palette into the canvas the moment it changes,
+// so the halo recolors live (no waiting on a PATCH round-trip).
+watch(material, (m) => {
+  canvasRef.value?.setMaskPalette(getMaskPalette(m))
+})
+
+// Debounced persistence. The customer can flip checkboxes / toggle materials
+// rapidly; we coalesce to a single PATCH per ~400 ms idle. We only PATCH
+// when any of the three values diverged from the order on disk — first
+// hydrate doesn't fire because we set `lastSavedSnapshot` BEFORE the watcher
+// activates (after order.value is hydrated).
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let lastSavedSnapshot: { material: Material | ''; withRelief: boolean; reliefNote: string } | null =
+  null
+
+function maybePersistOrderEdit() {
+  if (!order.value) return
+  const snap = {
+    material: material.value,
+    withRelief: withRelief.value,
+    reliefNote: reliefNote.value,
+  }
+  if (
+    lastSavedSnapshot &&
+    lastSavedSnapshot.material === snap.material &&
+    lastSavedSnapshot.withRelief === snap.withRelief &&
+    lastSavedSnapshot.reliefNote === snap.reliefNote
+  ) {
+    return
+  }
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(async () => {
+    try {
+      const updated = await ordersService.update(orderUuid.value, {
+        // Only send `material` when set — backend rejects empty strings on
+        // material because it's a CharField with choices.
+        ...(snap.material ? { material: snap.material } : {}),
+        with_relief: snap.withRelief,
+        relief_note: snap.reliefNote,
+      })
+      order.value = updated
+      lastSavedSnapshot = snap
+    } catch {
+      toast.error('No pudimos guardar tus cambios. Probá de nuevo.')
+    }
+  }, 400)
+}
+
+watch([material, withRelief, reliefNote], maybePersistOrderEdit)
+
 // === Save / Continue ===
 
 async function onContinue() {
@@ -238,6 +299,21 @@ async function bootstrapEditor() {
     // feedback — it just lets the canvas exist in time to receive the image.
     isLoading.value = false
     await nextTick()
+
+    // Hydrate inspector state from the order BEFORE wiring the persistence
+    // watcher's snapshot. Set lastSavedSnapshot first so the watcher's
+    // initial fire (from these assignments) is a no-op.
+    lastSavedSnapshot = {
+      material: order.value.material,
+      withRelief: order.value.with_relief,
+      reliefNote: order.value.relief_note,
+    }
+    material.value = order.value.material
+    withRelief.value = order.value.with_relief
+    reliefNote.value = order.value.relief_note
+    // Push the initial palette into the canvas so a returning customer with
+    // a material already chosen sees the right halo color on Auto cut.
+    canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
 
     const localUrl = await fetchAsObjectUrl(original)
     await loadImageIntoEditor(localUrl)
@@ -361,8 +437,14 @@ onMounted(bootstrapEditor)
       <EditorInspector
         :mask-visible="maskVisible"
         :options="cropOptions"
+        :material="material"
+        :with-relief="withRelief"
+        :relief-note="reliefNote"
         @update:mask-visible="maskVisible = $event"
         @update:options="cropOptions = $event"
+        @update:material="material = $event"
+        @update:with-relief="withRelief = $event"
+        @update:relief-note="reliefNote = $event"
       />
     </div>
 
