@@ -72,6 +72,7 @@ export function seedActiveCustomer(): SeededCustomer {
   ].join('; ')
 
   runInBackendShell(code)
+  seededInThisFile.push(email)
   return { email, password }
 }
 
@@ -147,8 +148,34 @@ export function seedDraftForCustomer(customer: SeededCustomer): string {
   return runInBackendShell(code).trim()
 }
 
-/** Delete all e2e users (and cascade their orders). Call from `afterAll` to keep the DB tidy. */
+/**
+ * Track customers seeded by the current test file so `cleanupSeededUsers()`
+ * only removes the ones THIS file created.
+ *
+ * Without this, two specs running in parallel (e.g. dashboard.spec + upload.spec)
+ * step on each other's data when one's afterAll fires while the other is mid-test.
+ */
+const seededInThisFile: string[] = []
+
+/** Delete users seeded by THIS test file only. Call from `afterAll`. */
 export function cleanupSeededUsers(): void {
+  if (seededInThisFile.length === 0) return
+  const emailList = seededInThisFile.map((e) => `'${e}'`).join(',')
+  const code = [
+    "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
+    'import django; django.setup()',
+    'from apps.users.models import User',
+    `User.objects.filter(email__in=[${emailList}]).delete()`,
+  ].join('; ')
+  runInBackendShell(code)
+  seededInThisFile.length = 0
+}
+
+/**
+ * Nuke ALL e2e users (used by the cleanup script run before a full suite to
+ * wipe stale data from prior crashed runs). Don't call from a spec's afterAll.
+ */
+export function cleanupAllE2EUsers(): void {
   const code = [
     "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
     'import django; django.setup()',
