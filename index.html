@@ -7,8 +7,14 @@
     <title>EN DOS Studio · Stickers personalizados</title>
     <meta name="description" content="Sube tu diseño y conviértelo en stickers PRO. Recorte automático, relieve y acabados premium." />
 
-    <!-- Loaded async: the editor view awaits cv.onRuntimeInitialized via useOpenCV. -->
-    <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+    <!-- OpenCV.js is intentionally NOT loaded here.
+         The bundle is ~10 MB and the WASM compile blocks the main thread
+         hard enough on first visit that Chrome can mark the renderer as
+         hung (RESULT_CODE_HUNG). useOpenCV.ts injects the script tag
+         lazily — only when the editor route opens AND only after the
+         page has rendered. Pages that don't need OpenCV (home, login,
+         dashboard, upload, order-config, checkout, confirmation) never
+         pay the cost. -->
   </head>
   <body class="h-full bg-bg text-text antialiased">
     <div id="app" class="min-h-full"></div>

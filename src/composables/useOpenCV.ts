@@ -80,64 +80,87 @@ let readyPromise: Promise<OpenCv> | null = null
 const isReady = ref(false)
 const error = ref<string | null>(null)
 
+const OPENCV_CDN_URL = 'https://docs.opencv.org/4.x/opencv.js'
+const READY_TIMEOUT_MS = 30_000
+
+/**
+ * Inject the OpenCV.js CDN script tag once. We do this lazily (not from
+ * index.html) because the WASM compile blocks the main thread hard enough
+ * to crash unrelated pages with RESULT_CODE_HUNG. Pages that don't need
+ * OpenCV never pay the cost.
+ *
+ * The injected tag is module-scoped and idempotent — calling this multiple
+ * times only ever adds one <script> to the DOM.
+ */
+function injectOpenCvScript() {
+  if (document.querySelector(`script[src="${OPENCV_CDN_URL}"]`)) return
+  const s = document.createElement('script')
+  s.src = OPENCV_CDN_URL
+  s.async = true
+  // No crossorigin attr — opencv.org doesn't send the right CORS header,
+  // and we don't read the script body (just rely on the side effect of
+  // setting window.cv).
+  document.head.appendChild(s)
+}
+
 /**
  * Resolves once OpenCV.js has finished initializing. Module-scoped so all
  * callers share one wait. Subsequent calls after first ready are immediate.
  *
- * The CDN script tag in index.html has `async`, so by the time this code
- * runs `window.cv` may be:
- *   1. fully initialized — `cv.Mat` is defined → resolve immediately
- *   2. partially loaded — `cv` exists but `cv.Mat` is not yet → wait for
- *      `onRuntimeInitialized`
- *   3. not yet loaded — `cv` is undefined → poll until it appears, then
- *      install the callback. Don't reject preemptively, the script is in flight.
+ * Two phases:
+ *   1. Inject the CDN <script> tag (no-op if already injected).
+ *   2. Poll for window.cv to appear, then either resolve immediately
+ *      (cv.Mat already defined) or attach onRuntimeInitialized.
  *
- * After ~30s with `cv` still undefined we give up and reject — at that point
- * the CDN is genuinely unreachable (network, ad-blocker, etc.) and the editor
- * shows the "OpenCV.js no se cargó" banner.
+ * Times out after 30s — at that point the CDN is genuinely unreachable
+ * (network, ad-blocker, captive portal) and the editor surfaces the error.
  */
-const READY_TIMEOUT_MS = 30_000
-
 export function whenOpenCvReady(): Promise<OpenCv> {
   if (readyPromise) return readyPromise
 
+  // Defer the actual WASM-loading work to the next macrotask so the editor
+  // body has a chance to paint first. Without this, opening /editor for the
+  // first time freezes the renderer long enough that Chrome decides it's
+  // hung. The setTimeout is enough to let Vue's mount + first frame complete.
   readyPromise = new Promise<OpenCv>((resolve, reject) => {
-    const startedAt = Date.now()
+    setTimeout(() => {
+      injectOpenCvScript()
 
-    function attach(cv: OpenCv) {
-      if (cv.Mat) {
-        isReady.value = true
-        resolve(cv)
-        return
+      const startedAt = Date.now()
+
+      function attach(cv: OpenCv) {
+        if (cv.Mat) {
+          isReady.value = true
+          resolve(cv)
+          return
+        }
+        cv.onRuntimeInitialized = () => {
+          isReady.value = true
+          resolve(cv)
+        }
       }
-      cv.onRuntimeInitialized = () => {
-        isReady.value = true
-        resolve(cv)
-      }
-    }
 
-    // Fast path: cv is already on window.
-    const cv = window.cv
-    if (typeof cv !== 'undefined') {
-      attach(cv)
-      return
-    }
-
-    // Slow path: the async CDN script hasn't finished downloading yet. Poll
-    // every 100ms until cv appears, then attach the callback. Bail at timeout.
-    const interval = setInterval(() => {
+      // Fast path: cv is already on window (HMR, re-mount, etc.).
       if (typeof window.cv !== 'undefined') {
-        clearInterval(interval)
         attach(window.cv)
         return
       }
-      if (Date.now() - startedAt > READY_TIMEOUT_MS) {
-        clearInterval(interval)
-        const msg = 'OpenCV.js no se cargó. Revisá la CDN en index.html.'
-        error.value = msg
-        reject(new Error(msg))
-      }
-    }, 100)
+
+      // Poll for window.cv every 100ms; bail at READY_TIMEOUT_MS.
+      const interval = setInterval(() => {
+        if (typeof window.cv !== 'undefined') {
+          clearInterval(interval)
+          attach(window.cv)
+          return
+        }
+        if (Date.now() - startedAt > READY_TIMEOUT_MS) {
+          clearInterval(interval)
+          const msg = 'OpenCV.js no se cargó. Revisá tu conexión.'
+          error.value = msg
+          reject(new Error(msg))
+        }
+      }, 100)
+    }, 0)
   })
 
   return readyPromise
