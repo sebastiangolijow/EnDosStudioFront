@@ -92,6 +92,8 @@ interface OpenCv {
     iterations?: number,
   ): void
   bitwise_not(src: MatLike, dst: MatLike): void
+  bitwise_or(src1: MatLike, src2: MatLike, dst: MatLike): void
+  convexHull(points: MatLike, hull: MatLike, clockwise?: boolean, returnPoints?: boolean): void
   getStructuringElement(
     shape: number,
     ksize: { width: number; height: number },
@@ -315,7 +317,13 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     const bgLow = new cv.Mat()
     const bgHigh = new cv.Mat()
     const colorMask = new cv.Mat()
-    const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5))
+    // Two morphology kernels: a small one to clean speckle on alpha masks,
+    // and a wide one to bridge edge breaks in bg-trim (where dark artwork
+    // merges with shadow at the silhouette edge and inRange chops it into
+    // disconnected chunks). 15×15 is enough to bridge ~7 px gaps without
+    // visibly distorting the silhouette.
+    const morphKernelSmall = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5))
+    const morphKernelWide = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(15, 15))
     let kernelMat: MatLike | null = null
     const dilated = new cv.Mat()
     const dilatedContours = new cv.MatVector()
@@ -331,7 +339,8 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
 
       // Helper: given a binary 8UC1 mask, paint the union of its real
       // contours into `filled`. Returns true if any contour was kept.
-      function paintContoursFromMask(mask: MatLike): boolean {
+      // Per-strategy minArea so robust strategies can keep thinner pieces.
+      function paintContoursFromMask(mask: MatLike, minArea: number): boolean {
         const localContours = new cv.MatVector()
         const localHierarchy = new cv.Mat()
         try {
@@ -345,7 +354,7 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
           let kept = 0
           for (let i = 0; i < localContours.size(); i++) {
             const a = cv.contourArea(localContours.get(i))
-            if (a < MIN_AREA || a > MAX_AREA) continue
+            if (a < minArea || a > MAX_AREA) continue
             cv.drawContours(
               filled,
               localContours,
@@ -379,8 +388,8 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
             dst[i] = srcArr[i * 4 + 3] >= 128 ? 255 : 0
           }
           // A single MORPH_OPEN cleans up speckle without nuking thin features.
-          cv.morphologyEx(alphaMask, alphaMask, cv.MORPH_OPEN, morphKernel)
-          if (paintContoursFromMask(alphaMask)) strategyUsed = 'alpha'
+          cv.morphologyEx(alphaMask, alphaMask, cv.MORPH_OPEN, morphKernelSmall)
+          if (paintContoursFromMask(alphaMask, MIN_AREA)) strategyUsed = 'alpha'
         } finally {
           alphaMask.delete()
         }
@@ -399,7 +408,11 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       ) {
         // Drop alpha channel — inRange wants 3-channel input.
         cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB)
-        const tol = 25
+        // Wider tolerance than the previous 25 — dark artwork against a
+        // light bg can merge with edge shadow; the extra slack keeps the
+        // silhouette continuous instead of breaking into chunks at the
+        // bottom of e.g. a navy sweater on grey.
+        const tol = 35
         const lo = [
           Math.max(0, inspection.bgR - tol),
           Math.max(0, inspection.bgG - tol),
@@ -418,11 +431,18 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
           cv.inRange(rgb, bgLowSrc, bgHighSrc, colorMask)
           // colorMask = 255 where pixel ≈ background. Invert to get artwork.
           cv.bitwise_not(colorMask, colorMask)
-          // Close small holes inside the artwork (gaps from glare on the
-          // sticker itself), then open to drop tiny noise.
-          cv.morphologyEx(colorMask, colorMask, cv.MORPH_CLOSE, morphKernel)
-          cv.morphologyEx(colorMask, colorMask, cv.MORPH_OPEN, morphKernel)
-          if (paintContoursFromMask(colorMask)) strategyUsed = 'bg-trim'
+          // Aggressive close to bridge any breaks where artwork chunks were
+          // disconnected by edge shadow / cuffs / dark stitching. NO open —
+          // an open here erodes legitimate thin features (cuffs, hems,
+          // narrow handles) and was the cause of the EME sweater's bottom
+          // edge missing from the cut line. Min-area filtering on the
+          // contour pass below handles speckle instead.
+          cv.morphologyEx(colorMask, colorMask, cv.MORPH_CLOSE, morphKernelWide)
+          // bg-trim is robust enough to skip the noise floor; a 0.1%-of-
+          // canvas threshold lets thin pieces (e.g. a narrow sweater hem)
+          // survive while still rejecting actual specks.
+          if (paintContoursFromMask(colorMask, totalPixels * 0.001))
+            strategyUsed = 'bg-trim'
         } finally {
           bgLowSrc.delete()
           bgHighSrc.delete()
@@ -552,7 +572,8 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       bgLow.delete()
       bgHigh.delete()
       colorMask.delete()
-      morphKernel.delete()
+      morphKernelSmall.delete()
+      morphKernelWide.delete()
       kernelMat?.delete()
       dilated.delete()
       dilatedContours.delete()
