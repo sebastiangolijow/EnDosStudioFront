@@ -60,6 +60,16 @@ export function useCanvasEditor() {
    *  polygon — pixels outside become transparent so the canvas's checker
    *  background shows through (== "white background removed" effect). */
   const removeBackground = ref(false)
+  /** When true, draw the base image at reduced opacity so the canvas's
+   *  checker pattern shows through the artwork too — used for the
+   *  "vinilo transparente" material. */
+  const transparentMaterial = ref(false)
+  /** When true, the customer has chosen a material with a colored halo;
+   *  the base image is drawn at slightly reduced opacity (~88%) so the
+   *  halo bleeds through it subtly — matches the reference shop where
+   *  holographic is vivid in the margin and barely visible over the
+   *  artwork itself. */
+  const materialActive = ref(false)
 
   // === Internals (not reactive) ===
   let resizeObserver: ResizeObserver | null = null
@@ -159,7 +169,23 @@ export function useCanvasEditor() {
       ctx.closePath()
       ctx.clip()
     }
+    // Two opacity tweaks on the base image:
+    //  - "vinilo transparente" → drop hard so the checker reads through
+    //    (the customer reads it as "transparent vinyl, surface behind
+    //    shows through").
+    //  - With a material set + a polygon present → drop subtly (~85%)
+    //    so the holographic / metallic halo BLEEDS through the artwork
+    //    a little. Reference shop: halo vivid in the bleed margin,
+    //    barely visible over the artwork itself. We get the "barely"
+    //    by letting the underlying mask layer peek through.
+    const priorAlpha = ctx.globalAlpha
+    if (transparentMaterial.value) {
+      ctx.globalAlpha = priorAlpha * 0.55
+    } else if (materialActive.value && shouldClip) {
+      ctx.globalAlpha = priorAlpha * 0.88
+    }
     ctx.drawImage(image.value.source, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
+    ctx.globalAlpha = priorAlpha
     if (shouldClip) ctx.restore()
   }
 
@@ -352,6 +378,16 @@ export function useCanvasEditor() {
     drawBaseLayer()
   }
 
+  function setTransparentMaterial(enabled: boolean): void {
+    transparentMaterial.value = enabled
+    drawBaseLayer()
+  }
+
+  function setMaterialActive(active: boolean): void {
+    materialActive.value = active
+    drawBaseLayer()
+  }
+
   /**
    * Render the mask polygon to a Blob at IMAGE-NATURAL resolution, suitable
    * for upload as the `die_cut_mask` OrderFile. The file is opaque-black
@@ -440,6 +476,8 @@ export function useCanvasEditor() {
     setMaskVisible,
     setMaskPalette,
     setRemoveBackground,
+    setTransparentMaterial,
+    setMaterialActive,
     getMaskAsBlob,
     reset,
   }

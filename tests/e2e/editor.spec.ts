@@ -223,7 +223,8 @@ test.describe('editor (worker pipeline, OpenCV reachable)', () => {
     // Auto cut, the mask layer (second canvas) should be empty.
     const maskBefore = await page.evaluate(() => {
       const canvases = document.querySelectorAll('.canvas-stack > canvas')
-      const mask = canvases[1] as HTMLCanvasElement | undefined
+      // Stack order is now mask (0), base (1), ui (2). Mask is the FIRST.
+      const mask = canvases[0] as HTMLCanvasElement | undefined
       if (!mask) return -1
       const ctx = mask.getContext('2d')!
       const data = ctx.getImageData(0, 0, mask.width, mask.height).data

@@ -24,6 +24,8 @@ const {
   setMaskVisible,
   setMaskPalette,
   setRemoveBackground,
+  setTransparentMaterial,
+  setMaterialActive,
   getMaskAsBlob,
   reset,
 } = useCanvasEditor()
@@ -40,6 +42,8 @@ defineExpose({
   setMaskVisible: (v: boolean) => setMaskVisible(v),
   setMaskPalette: (palette: MaskPalette) => setMaskPalette(palette),
   setRemoveBackground: (enabled: boolean) => setRemoveBackground(enabled),
+  setTransparentMaterial: (enabled: boolean) => setTransparentMaterial(enabled),
+  setMaterialActive: (active: boolean) => setMaterialActive(active),
   getMaskAsBlob: () => getMaskAsBlob(),
   reset: () => reset(),
   hasImage: () => !!image.value,
@@ -48,19 +52,22 @@ defineExpose({
 </script>
 
 <template>
-  <!-- 3-layer canvas stack. CSS rules keep them perfectly stacked and
-       route pointer events to the top (UI) layer only. The transparent-checker
-       background sells "no fondo" to the customer when the image has alpha. -->
+  <!-- 3-layer canvas stack. Order in DOM = visual order (later = on top).
+       Mask FIRST (lowest), so the halo lives in the bleed margin only —
+       the base image draws on top of it, covering the halo wherever the
+       artwork exists (matches the reference shop: holographic vivid in
+       the bleed, barely visible over the artwork itself).
+       UI stays last so it receives all pointer events. -->
   <div
     ref="stack"
     class="canvas-stack relative aspect-square w-full overflow-hidden rounded-lg border border-border"
   >
     <canvas
-      ref="baseCanvas"
+      ref="maskCanvas"
       class="absolute inset-0 size-full"
     />
     <canvas
-      ref="maskCanvas"
+      ref="baseCanvas"
       class="absolute inset-0 size-full"
     />
     <canvas

@@ -294,9 +294,18 @@ watch(removeBackground, (v) => canvasRef.value?.setRemoveBackground(v))
 // === Material + relief: persist to draft, repaint halo ===
 
 // Push the chosen material's palette into the canvas the moment it changes,
-// so the halo recolors live (no waiting on a PATCH round-trip).
+// so the halo recolors live (no waiting on a PATCH round-trip). For
+// "vinilo transparente" also reduce the base-image opacity so the
+// canvas's checker pattern reads through the artwork — same effect the
+// reference shop uses to indicate the transparent vinyl finish.
 watch(material, (m) => {
   canvasRef.value?.setMaskPalette(getMaskPalette(m))
+  canvasRef.value?.setTransparentMaterial(m === 'vinilo_transparente')
+  // Material active means a colored halo exists — drop the artwork's
+  // alpha slightly so the halo peeks through. "vinilo_transparente"
+  // gets its own dedicated treatment via setTransparentMaterial above
+  // and shouldn't double-dip on the alpha drop.
+  canvasRef.value?.setMaterialActive(m !== '' && m !== 'vinilo_transparente')
 })
 
 // Debounced persistence. The customer can flip checkboxes / toggle materials
@@ -442,6 +451,10 @@ async function bootstrapEditor() {
     // Push the initial palette into the canvas so a returning customer with
     // a material already chosen sees the right halo color on Auto cut.
     canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
+    canvasRef.value?.setTransparentMaterial(material.value === 'vinilo_transparente')
+    canvasRef.value?.setMaterialActive(
+      material.value !== '' && material.value !== 'vinilo_transparente',
+    )
     // Push the bg-removal default so the base layer respects it from the
     // very first paint (otherwise a customer with a pre-existing mask
     // would briefly see the original background before the watcher fires).

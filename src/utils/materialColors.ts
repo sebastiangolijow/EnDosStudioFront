@@ -16,7 +16,9 @@ import eggshellUrl from '@/assets/textures/eggshell.png?url'
 import eggshellHolograficoUrl from '@/assets/textures/eggshell_holografico.png?url'
 import holograficoUrl from '@/assets/textures/holografico.png?url'
 import holograficoTransparenteUrl from '@/assets/textures/holografico_transparente.png?url'
+import luminiscenteUrl from '@/assets/textures/luminiscente.png?url'
 import plateadoUrl from '@/assets/textures/plateado.png?url'
+import viniloBlancoUrl from '@/assets/textures/vinilo_blanco.png?url'
 
 /** Bounding box of the polygon, in CSS pixels — passed to gradient factories. */
 export interface MaskBBox {
@@ -60,7 +62,10 @@ export const MATERIAL_TEXTURE_URLS: Partial<Record<Material, string>> = {
   plateado: plateadoUrl,
   eggshell: eggshellUrl,
   eggshell_holografico: eggshellHolograficoUrl,
-  // No texture yet (will use gradient): vinilo_blanco, vinilo_transparente, luminiscente
+  vinilo_blanco: viniloBlancoUrl,
+  luminiscente: luminiscenteUrl,
+  // No texture for vinilo_transparente — by design, it's a checkerboard
+  // pattern indicating "no fondo", not a brushed material.
 }
 
 // === Texture loader cache ===
@@ -152,33 +157,9 @@ function textureFill(material: Material, opacity: number, fallback: string) {
   }
 }
 
-// === Gradient fallback for materials without a bundled texture ===
-
-/** Metallic gradient — supports 3+ stops, light → mid → dark, top to bottom. */
-function metallicFill(stops: string[], alpha: number) {
-  return (ctx: CanvasRenderingContext2D, bbox: MaskBBox): CanvasGradient => {
-    const grad = ctx.createLinearGradient(bbox.x, bbox.y, bbox.x, bbox.y + bbox.height)
-    const a = alpha.toFixed(2)
-    stops.forEach((s, i) => {
-      const t = stops.length === 1 ? 0 : i / (stops.length - 1)
-      grad.addColorStop(t, withAlpha(s, a))
-    })
-    return grad
-  }
-}
-
-function withAlpha(hex: string, alpha: string): string {
-  if (!hex.startsWith('#') || hex.length !== 7) return hex
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
-
 const MATERIAL_PALETTES: Record<Material, MaskPalette> = {
   vinilo_blanco: {
-    // No bundled texture — gradient stays.
-    fill: metallicFill(['#FFFFFF', '#F3F4F6', '#E5E7EB'], 0.65),
+    fill: textureFill('vinilo_blanco', 0.70, '#E5E7EB'),
     stroke: '#D1D5DB',
   },
   vinilo_transparente: {
@@ -203,8 +184,7 @@ const MATERIAL_PALETTES: Record<Material, MaskPalette> = {
     stroke: '#B45309',
   },
   luminiscente: {
-    // No bundled texture yet — gradient stays.
-    fill: metallicFill(['#ECFCCB', '#BEF264', '#84CC16'], 0.80),
+    fill: textureFill('luminiscente', 0.70, '#A3E635'),
     stroke: '#65A30D',
   },
   eggshell: {
