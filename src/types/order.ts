@@ -38,6 +38,21 @@ export const MATERIAL_LABELS: Record<Material, string> = {
   eggshell_holografico: 'Vinilo eggshell holográfico',
 }
 
+/**
+ * Cut shape — drives whether the editor is part of the customer flow.
+ * `contorneado` follows the artwork outline (auto-cut runs in the editor);
+ * the other three are geometric primitives sized from width × height.
+ * Customers picking anything other than `contorneado` skip the editor.
+ */
+export type Shape = 'contorneado' | 'cuadrado' | 'circulo' | 'redondeadas'
+
+export const SHAPE_LABELS: Record<Shape, string> = {
+  contorneado: 'Corte contorneado',
+  cuadrado: 'Cuadrado',
+  circulo: 'Círculo',
+  redondeadas: 'Esquinas redondeadas',
+}
+
 export const STATUS_LABELS: Record<OrderStatus, string> = {
   draft: 'Borrador',
   placed: 'Realizado',
@@ -72,6 +87,7 @@ export interface Order {
 
   // Sticker spec
   material: Material | ''
+  shape: Shape
   width_mm: number
   height_mm: number
   quantity: number
@@ -115,6 +131,7 @@ export interface Order {
  */
 export interface OrderUpdatePayload {
   material?: Material
+  shape?: Shape
   width_mm?: number
   height_mm?: number
   quantity?: number

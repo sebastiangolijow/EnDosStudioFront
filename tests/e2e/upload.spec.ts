@@ -54,14 +54,16 @@ test.describe('upload', () => {
     cleanupSeededUsers()
   })
 
-  // Block the OpenCV CDN — the upload flow ends by routing to /editor/{uuid},
-  // which loads OpenCV.js (~10 MB). Letting the script through hangs Playwright
-  // on subresource loading. The editor spec covers the OpenCV path explicitly.
+  // OpenCV.js used to load on the upload→editor route. Now upload routes
+  // straight to /order-config (the editor is opt-in via "Refinar contorno"
+  // for contorneado shapes) so OpenCV no longer loads on this path.
+  // Belt-and-suspenders: still block the CDN in case future code drops it
+  // back into the bundle — these tests must keep passing offline.
   test.beforeEach(async ({ page }) => {
     await page.route('**/opencv.js', (route) => route.abort())
   })
 
-  test('full flow: pick file → preview → continue → editor', async ({ page }) => {
+  test('full flow: pick file → preview → continue → order-config', async ({ page }) => {
     const customer = seedActiveCustomer()
     const accessToken = await loginAs(page, customer)
 
@@ -90,12 +92,13 @@ test.describe('upload', () => {
     await expect(continueBtn).toBeEnabled()
     await continueBtn.click()
 
-    // Should land on /editor/{uuid} (step 2 of the flow)
-    await expect(page).toHaveURL(/\/editor\/[0-9a-f-]{36}$/, { timeout: 10_000 })
+    // Should land on /order-config/{uuid}. The editor is opt-in from
+    // there (only relevant when shape=contorneado).
+    await expect(page).toHaveURL(/\/order-config\/[0-9a-f-]{36}$/, { timeout: 10_000 })
 
     // Verify the backend has the draft + file attached
     const url = page.url()
-    const orderUuid = url.match(/\/editor\/([0-9a-f-]{36})$/)![1]
+    const orderUuid = url.match(/\/order-config\/([0-9a-f-]{36})$/)![1]
 
     const orderRes = await page.request.get(
       `http://localhost:8000/api/v1/orders/${orderUuid}/`,

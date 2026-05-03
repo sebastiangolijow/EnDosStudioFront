@@ -166,4 +166,58 @@ test.describe('order config', () => {
     await page.getByTestId('material-vinilo_blanco').click()
     await expect(page.getByTestId('summary-continue')).toBeEnabled({ timeout: 5_000 })
   })
+
+  test('shape: contorneado is the default and shows the Refinar contorno CTA', async ({
+    page,
+  }) => {
+    const customer = seedActiveCustomer()
+    const accessToken = await loginAs(page, customer)
+    const draftUuid = seedDraftForCustomer(customer)
+    await uploadOriginal(page, accessToken, draftUuid)
+
+    await page.goto(`/order-config/${draftUuid}`)
+
+    // Default shape is contorneado — its card carries the selected style.
+    await expect(page.getByTestId('shape-contorneado')).toHaveAttribute('aria-pressed', 'true')
+    // Refine-contour bar visible (only relevant for contorneado).
+    await expect(page.getByTestId('refine-contour-bar')).toBeVisible()
+  })
+
+  test('shape: picking a geometric shape hides the Refinar contorno CTA', async ({ page }) => {
+    const customer = seedActiveCustomer()
+    const accessToken = await loginAs(page, customer)
+    const draftUuid = seedDraftForCustomer(customer)
+    await uploadOriginal(page, accessToken, draftUuid)
+
+    await page.goto(`/order-config/${draftUuid}`)
+
+    await page.getByTestId('shape-circulo').click()
+    await expect(page.getByTestId('shape-circulo')).toHaveAttribute('aria-pressed', 'true')
+    // Refining the contour doesn't make sense for a circle — the CTA hides.
+    await expect(page.getByTestId('refine-contour-bar')).toBeHidden()
+  })
+
+  test('shape: choice persists to the backend on Continuar', async ({ page }) => {
+    const customer = seedActiveCustomer()
+    const accessToken = await loginAs(page, customer)
+    const draftUuid = seedDraftForCustomer(customer)
+    await uploadOriginal(page, accessToken, draftUuid)
+
+    await page.goto(`/order-config/${draftUuid}`)
+
+    // Pick a non-default shape, plus the minimum needed to enable Continuar.
+    await page.getByTestId('shape-redondeadas').click()
+    await page.getByTestId('material-vinilo_blanco').click()
+    await expect(page.getByTestId('summary-continue')).toBeEnabled({ timeout: 5_000 })
+    await page.getByTestId('summary-continue').click()
+
+    // Lands on /checkout — the backend now has shape=redondeadas.
+    await expect(page).toHaveURL(new RegExp(`/checkout/${draftUuid}$`), { timeout: 10_000 })
+    const orderRes = await page.request.get(
+      `http://localhost:8000/api/v1/orders/${draftUuid}/`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    const order = await orderRes.json()
+    expect(order.shape).toBe('redondeadas')
+  })
 })

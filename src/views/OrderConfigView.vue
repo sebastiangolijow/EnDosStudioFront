@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppStepper from '@/components/ui/AppStepper.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import MaterialCard from '@/components/order/MaterialCard.vue'
+import ShapeCard from '@/components/order/ShapeCard.vue'
 import SizePicker from '@/components/order/SizePicker.vue'
 import QuantityStepper from '@/components/order/QuantityStepper.vue'
 import OrderSummary from '@/components/order/OrderSummary.vue'
@@ -15,6 +16,8 @@ import {
   MATERIAL_LABELS,
   MIN_DIMENSION_MM,
   MIN_QUANTITY,
+  type Shape,
+  SHAPE_LABELS,
 } from '@/types/order'
 
 const route = useRoute()
@@ -35,6 +38,10 @@ const orderUuid = computed(() => route.params.uuid as string | undefined)
 // Defaults are valid backend values so the live quote starts working
 // immediately (no "click around to make the price appear" friction).
 const material = ref<Material | ''>('')
+// Default `contorneado` matches the backend default and the existing
+// auto-cut flow. Customer can switch to a primitive shape and skip the
+// editor entirely.
+const shape = ref<Shape>('contorneado')
 const widthMm = ref<number>(70) // 7 cm — matches the mockup's default
 const heightMm = ref<number>(70)
 const quantity = ref<number>(100)
@@ -42,6 +49,8 @@ const withDesignService = ref<boolean>(false)
 const withVarnish = ref<boolean>(false)
 const withRelief = ref<boolean>(false)
 const reliefNote = ref<string>('')
+
+const ALL_SHAPES = Object.keys(SHAPE_LABELS) as Shape[]
 
 // === Quote state ===
 const totalEur = ref<string>('')
@@ -65,6 +74,7 @@ async function loadOrder() {
 
     // Hydrate form from the existing order so revisiting preserves choices.
     if (order.material) material.value = order.material
+    if (order.shape) shape.value = order.shape
     if (order.width_mm) widthMm.value = order.width_mm
     if (order.height_mm) heightMm.value = order.height_mm
     if (order.quantity && order.quantity >= MIN_QUANTITY) quantity.value = order.quantity
@@ -145,6 +155,7 @@ async function onContinue() {
   try {
     await ordersService.update(orderUuid.value, {
       material: material.value,
+      shape: shape.value,
       width_mm: widthMm.value,
       height_mm: heightMm.value,
       quantity: quantity.value,
@@ -165,9 +176,22 @@ async function onContinue() {
 }
 
 function onBack() {
-  // The editor (step 2) isn't built yet, so for now "Volver a editar" goes
-  // back to the upload screen. When the editor lands, route to /editor/{uuid}.
-  router.push('/upload')
+  // For contorneado, "Volver a editar" returns to the editor where the
+  // customer can refine the auto-cut. For geometric shapes the editor was
+  // skipped entirely, so we send them back to /upload to swap the image
+  // (the only thing they could change before order-config).
+  if (shape.value === 'contorneado' && orderUuid.value) {
+    router.push({ name: 'editor', params: { uuid: orderUuid.value } })
+  } else {
+    router.push('/upload')
+  }
+}
+
+function onRefineContour() {
+  // Only meaningful for contorneado; the button is hidden otherwise.
+  if (orderUuid.value) {
+    router.push({ name: 'editor', params: { uuid: orderUuid.value } })
+  }
 }
 
 onMounted(loadOrder)
@@ -197,6 +221,41 @@ onMounted(loadOrder)
               :selected="material === m"
               @select="material = m"
             />
+          </div>
+        </section>
+
+        <!-- Shape picker -->
+        <section>
+          <h2 class="mb-4 text-h3 font-bold text-text">
+            Forma
+          </h2>
+          <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <ShapeCard
+              v-for="s in ALL_SHAPES"
+              :key="s"
+              :shape="s"
+              :selected="shape === s"
+              @select="shape = s"
+            />
+          </div>
+          <!-- Refine-contour CTA — only useful when shape=contorneado, since
+               the geometric shapes don't run through the editor. -->
+          <div
+            v-if="shape === 'contorneado'"
+            class="mt-3 flex items-center justify-between gap-3 rounded-md border border-border bg-surface-2 px-4 py-3"
+            data-testid="refine-contour-bar"
+          >
+            <p class="text-sm text-text-muted">
+              ¿Querés ajustar la línea de corte automática?
+            </p>
+            <AppButton
+              variant="ghost"
+              size="sm"
+              data-testid="refine-contour"
+              @click="onRefineContour"
+            >
+              Refinar contorno →
+            </AppButton>
           </div>
         </section>
 
