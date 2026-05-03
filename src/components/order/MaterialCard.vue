@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { type Material, MATERIAL_LABELS } from '@/types/order'
+import { MATERIAL_TEXTURE_URLS } from '@/utils/materialColors'
 
 interface Props {
   material: Material
@@ -57,6 +58,9 @@ const wrapperClasses = computed(() =>
       : 'border-border hover:border-text-muted hover:bg-surface-2',
   ].join(' '),
 )
+
+/** Texture URL for this material, or null if we still use a CSS gradient. */
+const textureUrl = computed(() => MATERIAL_TEXTURE_URLS[props.material] ?? null)
 </script>
 
 <template>
@@ -67,11 +71,26 @@ const wrapperClasses = computed(() =>
     :data-testid="`material-${material}`"
     @click="$emit('select', material)"
   >
-    <!-- Swatch -->
+    <!-- Swatch — real texture PNG when bundled, CSS gradient fallback
+         for the few materials without a texture. The img wrapper keeps
+         the same aspect-square / border styling either way. -->
     <div
-      :class="['aspect-square w-full rounded-md border border-border', SWATCH_CLASSES[material]]"
+      class="aspect-square w-full overflow-hidden rounded-md border border-border"
       aria-hidden="true"
-    />
+    >
+      <img
+        v-if="textureUrl"
+        :src="textureUrl"
+        :alt="''"
+        class="size-full object-cover"
+        loading="lazy"
+        decoding="async"
+      >
+      <div
+        v-else
+        :class="['size-full', SWATCH_CLASSES[material]]"
+      />
+    </div>
     <!-- Label + tagline -->
     <div>
       <p

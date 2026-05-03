@@ -1,17 +1,22 @@
 /**
- * Material → mask colors used in the editor's cut-line halo.
+ * Material → mask textures and colors used in the editor's cut-line halo.
  *
- * `fill` is either a flat CSS color OR a function that builds a
- * `CanvasGradient` for a given bounding box. Functions let us render
- * iridescent materials (holographic, eggshell holographic) with the same
- * visual the picker swatches use, instead of a flat approximation.
+ * Most materials have a real PNG texture (in src/assets/textures/) — same
+ * approach the reference shop uses. Materials without a bundled texture
+ * fall back to a multi-stop linear gradient so the halo still renders.
  *
- * `stroke` is the cut-line color — kept as a flat string because the line
- * is thin and the gradient wouldn't read.
- *
- * When no material is selected the default brand orange is used.
+ * The texture URLs are also exported (MATERIAL_TEXTURE_URLS) so the
+ * order-config MaterialCard swatches can render the same image — keeps
+ * picker thumbnails and editor halos visually consistent.
  */
 import type { Material } from '@/types/order'
+
+import doradoUrl from '@/assets/textures/dorado.png?url'
+import eggshellUrl from '@/assets/textures/eggshell.png?url'
+import eggshellHolograficoUrl from '@/assets/textures/eggshell_holografico.png?url'
+import holograficoUrl from '@/assets/textures/holografico.png?url'
+import holograficoTransparenteUrl from '@/assets/textures/holografico_transparente.png?url'
+import plateadoUrl from '@/assets/textures/plateado.png?url'
 
 /** Bounding box of the polygon, in CSS pixels — passed to gradient factories. */
 export interface MaskBBox {
@@ -45,96 +50,109 @@ export const DEFAULT_PALETTE: MaskPalette = {
 }
 
 /**
- * Holographic texture pattern.
- *
- * The reference shop renders holographic with a real iridescent texture
- * image. We do the same — a 512×512 PNG bundled with the app, loaded
- * once at module scope, scaled to the polygon's bbox at draw time.
- *
- * Vite's `?url` query gives us a hashed URL the bundler will inline /
- * fingerprint correctly. The Image element is fired off immediately so
- * by the time the customer picks "Holográfico" in the inspector the
- * pixels are already decoded.
+ * Per-material texture URLs (from Vite's `?url` import). Materials without
+ * a bundled texture map to undefined and use the gradient fallback.
  */
-import holographicTextureUrl from '@/assets/textures/holographic.png?url'
-
-let holographicTextureImg: HTMLImageElement | null = null
-let holographicTexturePromise: Promise<HTMLImageElement> | null = null
-
-function loadHolographicTexture(): Promise<HTMLImageElement> {
-  if (holographicTextureImg) return Promise.resolve(holographicTextureImg)
-  if (holographicTexturePromise) return holographicTexturePromise
-  holographicTexturePromise = new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => {
-      holographicTextureImg = img
-      resolve(img)
-    }
-    img.onerror = () => reject(new Error('Failed to load holographic texture'))
-    img.src = holographicTextureUrl
-  })
-  return holographicTexturePromise
+export const MATERIAL_TEXTURE_URLS: Partial<Record<Material, string>> = {
+  holografico: holograficoUrl,
+  holografico_transparente: holograficoTransparenteUrl,
+  dorado: doradoUrl,
+  plateado: plateadoUrl,
+  eggshell: eggshellUrl,
+  eggshell_holografico: eggshellHolograficoUrl,
+  // No texture yet (will use gradient): vinilo_blanco, vinilo_transparente, luminiscente
 }
 
-// Kick the load eagerly so the image is ready by first paint.
-void loadHolographicTexture().catch(() => {
-  /* logged elsewhere; halo will fall back to a flat color */
+// === Texture loader cache ===
+
+const textureCache = new Map<Material, HTMLImageElement>()
+const texturePromises = new Map<Material, Promise<HTMLImageElement>>()
+const textureReadyHandlers: Set<() => void> = new Set()
+
+function loadTexture(material: Material): Promise<HTMLImageElement> {
+  const cached = textureCache.get(material)
+  if (cached) return Promise.resolve(cached)
+  const inflight = texturePromises.get(material)
+  if (inflight) return inflight
+  const url = MATERIAL_TEXTURE_URLS[material]
+  if (!url) return Promise.reject(new Error(`No texture for ${material}`))
+  const promise = new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      textureCache.set(material, img)
+      texturePromises.delete(material)
+      textureReadyHandlers.forEach((h) => h())
+      resolve(img)
+    }
+    img.onerror = () => {
+      texturePromises.delete(material)
+      reject(new Error(`Failed to load texture for ${material}`))
+    }
+    img.src = url
+  })
+  texturePromises.set(material, promise)
+  return promise
+}
+
+/**
+ * Eagerly preload all bundled material textures. Called once at module
+ * scope so customers don't see the flat fallback in the brief moment
+ * between picking a material and the texture finishing decode.
+ */
+;(Object.keys(MATERIAL_TEXTURE_URLS) as Material[]).forEach((m) => {
+  void loadTexture(m).catch(() => {
+    /* harmless: the halo falls back to a flat color until the image lands */
+  })
 })
 
 /**
- * Build a canvas pattern of the holographic texture, sized to roughly the
- * polygon's bounding box (no tiling visible — the swirls appear as a
- * single iridescent wash). Applied at low alpha via globalAlpha at draw
- * time so the artwork stays readable underneath.
+ * Subscribe to "any texture finished loading" events. The canvas composable
+ * uses this to repaint the mask layer once pixels are available.
+ *
+ * Returns an unsubscribe function.
  */
-function holographicFill(opacity: number) {
+export function onTextureReady(fn: () => void): () => void {
+  textureReadyHandlers.add(fn)
+  // Fire once immediately if any textures are already loaded.
+  if (textureCache.size > 0) fn()
+  return () => textureReadyHandlers.delete(fn)
+}
+
+// === Texture-pattern fill factory ===
+
+/**
+ * Build a canvas-pattern fill from the material's bundled texture.
+ * Scales the image to the polygon's bbox so the texture covers the whole
+ * sticker as one continuous surface (no visible tile repeats).
+ *
+ * If the texture isn't loaded yet, returns a flat fallback color and
+ * triggers a load — `onTextureReady` will fire once the image arrives so
+ * the canvas can repaint with the real texture.
+ */
+function textureFill(material: Material, opacity: number, fallback: string) {
   return (ctx: CanvasRenderingContext2D, bbox: MaskBBox): ResolvedFill => {
-    const img = holographicTextureImg
+    const img = textureCache.get(material)
     if (!img) {
-      // Texture still loading — kick it (in case the eager load failed)
-      // and request a redraw once it lands. The flat fallback is brief.
-      void loadHolographicTexture()
-        .then(() => textureReadyHandlers.forEach((h) => h()))
-        .catch(() => {})
-      return { style: '#C4B5FD', opacity: opacity * 0.6 }
+      void loadTexture(material).catch(() => {})
+      return { style: fallback, opacity: opacity * 0.6 }
     }
-    // Scale the texture into a helper canvas at the polygon's bbox size so
-    // the swirls cover the whole sticker as a single continuous surface
-    // (no visible tile repeats). createPattern("no-repeat") then ties one
-    // copy to the bbox via setTransform.
     const scaled = document.createElement('canvas')
     const w = Math.max(1, Math.round(bbox.width))
     const h = Math.max(1, Math.round(bbox.height))
     scaled.width = w
     scaled.height = h
     const sctx = scaled.getContext('2d')
-    if (!sctx) return { style: '#A78BFA', opacity }
+    if (!sctx) return { style: fallback, opacity }
     sctx.drawImage(img, 0, 0, w, h)
     const pattern = ctx.createPattern(scaled, 'no-repeat')
-    if (!pattern) return { style: '#A78BFA', opacity }
+    if (!pattern) return { style: fallback, opacity }
     const matrix = new DOMMatrix().translateSelf(bbox.x, bbox.y)
     pattern.setTransform(matrix)
     return { style: pattern, opacity }
   }
 }
 
-// Handlers to invoke when the holographic texture finishes loading. The
-// canvas composable subscribes via onTextureReady so it can redraw the
-// mask layer once pixels are available — otherwise a customer who picks
-// holographic before the image arrives sees the flat fallback forever.
-const textureReadyHandlers: Set<() => void> = new Set()
-
-export function onTextureReady(fn: () => void): () => void {
-  textureReadyHandlers.add(fn)
-  // Also fire once immediately if already loaded.
-  if (holographicTextureImg) fn()
-  return () => textureReadyHandlers.delete(fn)
-}
-
-// Notify subscribers when the eager load finishes.
-void loadHolographicTexture().then(() => {
-  textureReadyHandlers.forEach((h) => h())
-})
+// === Gradient fallback for materials without a bundled texture ===
 
 /** Metallic gradient — supports 3+ stops, light → mid → dark, top to bottom. */
 function metallicFill(stops: string[], alpha: number) {
@@ -149,7 +167,6 @@ function metallicFill(stops: string[], alpha: number) {
   }
 }
 
-/** Convert a `#rrggbb` hex to `rgba(r,g,b,a)`. Defensive for unknown inputs. */
 function withAlpha(hex: string, alpha: string): string {
   if (!hex.startsWith('#') || hex.length !== 7) return hex
   const r = parseInt(hex.slice(1, 3), 16)
@@ -158,12 +175,9 @@ function withAlpha(hex: string, alpha: string): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-// Higher alphas than the previous pass — the reference shop's halos are
-// near-opaque so the gradient reads even when it overlays dark artwork.
-// The fill covers the whole polygon (artwork + bleed), so the customer
-// sees what the entire sticker will look like through the material.
 const MATERIAL_PALETTES: Record<Material, MaskPalette> = {
   vinilo_blanco: {
+    // No bundled texture — gradient stays.
     fill: metallicFill(['#FFFFFF', '#F3F4F6', '#E5E7EB'], 0.65),
     stroke: '#D1D5DB',
   },
@@ -173,33 +187,32 @@ const MATERIAL_PALETTES: Record<Material, MaskPalette> = {
     stroke: '#94A3B8',
   },
   holografico: {
-    // Texture is already saturated; lower opacity keeps the artwork
-    // readable underneath the iridescent overlay.
-    fill: holographicFill(0.55),
+    fill: textureFill('holografico', 0.55, '#C4B5FD'),
     stroke: '#A78BFA',
   },
   holografico_transparente: {
-    fill: holographicFill(0.40),
+    fill: textureFill('holografico_transparente', 0.45, '#C4B5FD'),
     stroke: '#A78BFA',
   },
   plateado: {
-    fill: metallicFill(['#F3F4F6', '#D1D5DB', '#9CA3AF', '#6B7280'], 0.75),
+    fill: textureFill('plateado', 0.65, '#9CA3AF'),
     stroke: '#6B7280',
   },
   dorado: {
-    fill: metallicFill(['#FEF3C7', '#FBBF24', '#D97706', '#92400E'], 0.75),
+    fill: textureFill('dorado', 0.65, '#D4AF37'),
     stroke: '#B45309',
   },
   luminiscente: {
+    // No bundled texture yet — gradient stays.
     fill: metallicFill(['#ECFCCB', '#BEF264', '#84CC16'], 0.80),
     stroke: '#65A30D',
   },
   eggshell: {
-    fill: metallicFill(['#FFFBEB', '#FEF3C7', '#FDE68A'], 0.70),
+    fill: textureFill('eggshell', 0.65, '#D4B896'),
     stroke: '#D4B896',
   },
   eggshell_holografico: {
-    fill: holographicFill(0.45),
+    fill: textureFill('eggshell_holografico', 0.55, '#A5B4FC'),
     stroke: '#A5B4FC',
   },
 }

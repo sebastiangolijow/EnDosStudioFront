@@ -176,11 +176,9 @@ async function onContinue() {
 }
 
 function onBack() {
-  // For contorneado, "Volver a editar" returns to the editor where the
-  // customer can refine the auto-cut. For geometric shapes the editor was
-  // skipped entirely, so we send them back to /upload to swap the image
-  // (the only thing they could change before order-config).
-  if (shape.value === 'contorneado' && orderUuid.value) {
+  // Every shape passes through the editor for margin adjustment, so
+  // "Volver a editar" always returns to /editor.
+  if (orderUuid.value) {
     router.push({ name: 'editor', params: { uuid: orderUuid.value } })
   } else {
     router.push('/upload')
@@ -188,7 +186,6 @@ function onBack() {
 }
 
 function onRefineContour() {
-  // Only meaningful for contorneado; the button is hidden otherwise.
   if (orderUuid.value) {
     router.push({ name: 'editor', params: { uuid: orderUuid.value } })
   }
@@ -238,15 +235,14 @@ onMounted(loadOrder)
               @select="shape = s"
             />
           </div>
-          <!-- Refine-contour CTA — only useful when shape=contorneado, since
-               the geometric shapes don't run through the editor. -->
+          <!-- "Volver al editor" — always available now since every shape
+               passes through the editor for margin adjustment. -->
           <div
-            v-if="shape === 'contorneado'"
             class="mt-3 flex items-center justify-between gap-3 rounded-md border border-border bg-surface-2 px-4 py-3"
             data-testid="refine-contour-bar"
           >
             <p class="text-sm text-text-muted">
-              ¿Querés ajustar la línea de corte automática?
+              ¿Querés ajustar la línea de corte o el margen?
             </p>
             <AppButton
               variant="ghost"
@@ -254,7 +250,7 @@ onMounted(loadOrder)
               data-testid="refine-contour"
               @click="onRefineContour"
             >
-              Refinar contorno →
+              Volver al editor →
             </AppButton>
           </div>
         </section>

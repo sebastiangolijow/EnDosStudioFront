@@ -49,12 +49,13 @@ async function onContinue() {
     // 2. Upload the original image as the first OrderFile
     await filesService.upload(draft.uuid, 'original', selectedFile.value)
 
-    // 3. Move to /order-config — the customer picks shape, material, size,
-    //    qty there. If they keep the default shape (contorneado) and want
-    //    to refine the auto-cut, the order-config page surfaces a
-    //    "Refinar contorno" button that opens the editor. Geometric shapes
-    //    skip the editor entirely.
-    router.push({ name: 'order-config', params: { uuid: draft.uuid } })
+    // 3. Move to /editor — every shape passes through the editor so the
+    //    customer can adjust the margin (bleed) around their cut. For
+    //    contorneado the editor runs the auto-cut pipeline; for the
+    //    geometric shapes (cuadrado/circulo/redondeadas) the cut is just
+    //    a primitive sized to the image bbox, but the same margin slider
+    //    + halo preview applies.
+    router.push({ name: 'editor', params: { uuid: draft.uuid } })
   } catch (e) {
     // The Axios interceptor handles 401 (refresh + retry, then logout). Any
     // other error reaches us here.

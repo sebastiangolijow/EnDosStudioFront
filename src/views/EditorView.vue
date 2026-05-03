@@ -11,7 +11,7 @@ import { filesService } from '@/services/files.service'
 import { type AutoCropOptions, useAutoCropWorker } from '@/composables/useAutoCropWorker'
 import { useToast } from '@/composables/useToast'
 import { getMaskPalette } from '@/utils/materialColors'
-import { type Material, type Order, type OrderFile } from '@/types/order'
+import { type Material, type Order, type OrderFile, type Shape } from '@/types/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,13 +43,114 @@ const cropOptions = ref<AutoCropOptions>({
 })
 const maskVisible = ref<boolean>(true)
 
-// Material + relief state lives in the editor view (not the canvas
-// composable) because it's a draft-Order property, not a canvas concern.
+// Material + relief + shape state lives in the editor view (not the canvas
+// composable) because they're draft-Order properties, not canvas concerns.
 // Hydrated from the order on bootstrap, persisted via a debounced PATCH on
-// change. Picking a material here pre-fills the order-config card grid.
+// change. Picking these here pre-fills the order-config card grid.
 const material = ref<Material | ''>('')
 const withRelief = ref<boolean>(false)
 const reliefNote = ref<string>('')
+const shape = ref<Shape>('contorneado')
+
+/**
+ * Generate a geometric polygon (in image-natural coordinates) for the
+ * given shape, expanded by `marginPx` on every side. Used when the
+ * customer picks cuadrado/circulo/redondeadas — Auto cut doesn't run, but
+ * the editor still shows a mask + lets the margin slider adjust the bleed.
+ *
+ * The margin is baked into the polygon directly (not via the worker's
+ * dilate step) because we don't want to spin up the OpenCV pipeline just
+ * to enlarge a primitive — this is much faster and matches the same
+ * "polygon = final cut line" abstraction the rest of the editor uses.
+ *
+ * Returns null for `contorneado` (which uses the OpenCV auto-cut output).
+ */
+function geometricMaskPoints(
+  s: Shape,
+  imgWidth: number,
+  imgHeight: number,
+  marginPx: number,
+): { kind: 'image'; x: number; y: number }[] | null {
+  if (s === 'contorneado') return null
+  const m = Math.max(0, marginPx)
+  const w = imgWidth + 2 * m
+  const h = imgHeight + 2 * m
+  // The polygon coordinate system is image-natural, but we want the
+  // expanded shape centered on the image. Origin shifts by -m.
+  const ox = -m
+  const oy = -m
+
+  if (s === 'cuadrado') {
+    return [
+      { kind: 'image', x: ox, y: oy },
+      { kind: 'image', x: ox + w, y: oy },
+      { kind: 'image', x: ox + w, y: oy + h },
+      { kind: 'image', x: ox, y: oy + h },
+    ]
+  }
+  if (s === 'circulo') {
+    // 64-point ellipse — smooth enough to read as a circle at any size.
+    const cx = ox + w / 2
+    const cy = oy + h / 2
+    const rx = w / 2
+    const ry = h / 2
+    const N = 64
+    const points: { kind: 'image'; x: number; y: number }[] = []
+    for (let i = 0; i < N; i++) {
+      const t = (i / N) * 2 * Math.PI
+      points.push({ kind: 'image', x: cx + Math.cos(t) * rx, y: cy + Math.sin(t) * ry })
+    }
+    return points
+  }
+  // redondeadas — 4 quarter-circle corners. Corner radius = 10% of the
+  // shorter edge of the EXPANDED bbox so the rounding looks proportional.
+  const r = Math.min(w, h) * 0.1
+  const N_PER_CORNER = 12
+  const points: { kind: 'image'; x: number; y: number }[] = []
+  const corners: [number, number, number][] = [
+    [ox + r, oy + r, Math.PI], // TL
+    [ox + w - r, oy + r, 1.5 * Math.PI], // TR
+    [ox + w - r, oy + h - r, 0], // BR
+    [ox + r, oy + h - r, 0.5 * Math.PI], // BL
+  ]
+  for (const [cx, cy, startAngle] of corners) {
+    for (let i = 0; i <= N_PER_CORNER; i++) {
+      const t = startAngle + (i / N_PER_CORNER) * (Math.PI / 2)
+      points.push({ kind: 'image', x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r })
+    }
+  }
+  return points
+}
+
+/**
+ * Convert the customer's marginMm slider value to image-natural pixels
+ * using pxPerMm (already computed elsewhere from order.width_mm or the
+ * 100mm-long-edge fallback). 0 if scale is unknown.
+ */
+function marginPxForGeometric(): number {
+  const mm = cropOptions.value.marginMm ?? 15
+  const pm = pxPerMm.value
+  if (!pm || mm <= 0) return 0
+  return Math.round(mm * pm)
+}
+
+/**
+ * Apply the geometric mask for non-contorneado shapes. Called when shape
+ * changes, when the image loads, or when marginMm changes.
+ */
+function applyGeometricMaskIfNeeded() {
+  if (!loadedImage.value || !canvasRef.value) return
+  const pts = geometricMaskPoints(
+    shape.value,
+    loadedImage.value.naturalWidth,
+    loadedImage.value.naturalHeight,
+    marginPxForGeometric(),
+  )
+  if (pts) {
+    canvasRef.value.setMask(pts)
+  }
+  // contorneado: leave any existing auto-cut mask alone.
+}
 
 /**
  * Auto-crop runs in a Web Worker. The ~10 MB OpenCV.js WASM compile happens
@@ -168,8 +269,15 @@ async function loadImageIntoEditor(src: string) {
 let optionsTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(cropOptions, () => {
-  // Only auto-re-run when we already have a mask — otherwise the customer
-  // hasn't asked for it yet.
+  if (shape.value !== 'contorneado') {
+    // Geometric shapes: just regenerate the primitive polygon at the new
+    // margin. Cheap (no OpenCV worker round-trip), so no debounce needed —
+    // the slider drag feels instant.
+    applyGeometricMaskIfNeeded()
+    return
+  }
+  // contorneado: re-run auto-cut, but only when we already have a mask
+  // (otherwise the customer hasn't asked for it yet).
   if (!canvasRef.value?.hasMask()) return
   if (optionsTimer) clearTimeout(optionsTimer)
   optionsTimer = setTimeout(onAutoCut, 300)
@@ -187,12 +295,16 @@ watch(material, (m) => {
 
 // Debounced persistence. The customer can flip checkboxes / toggle materials
 // rapidly; we coalesce to a single PATCH per ~400 ms idle. We only PATCH
-// when any of the three values diverged from the order on disk — first
-// hydrate doesn't fire because we set `lastSavedSnapshot` BEFORE the watcher
+// when any tracked value diverged from the order on disk — first hydrate
+// doesn't fire because we set `lastSavedSnapshot` BEFORE the watcher
 // activates (after order.value is hydrated).
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-let lastSavedSnapshot: { material: Material | ''; withRelief: boolean; reliefNote: string } | null =
-  null
+let lastSavedSnapshot: {
+  material: Material | ''
+  withRelief: boolean
+  reliefNote: string
+  shape: Shape
+} | null = null
 
 function maybePersistOrderEdit() {
   if (!order.value) return
@@ -200,12 +312,14 @@ function maybePersistOrderEdit() {
     material: material.value,
     withRelief: withRelief.value,
     reliefNote: reliefNote.value,
+    shape: shape.value,
   }
   if (
     lastSavedSnapshot &&
     lastSavedSnapshot.material === snap.material &&
     lastSavedSnapshot.withRelief === snap.withRelief &&
-    lastSavedSnapshot.reliefNote === snap.reliefNote
+    lastSavedSnapshot.reliefNote === snap.reliefNote &&
+    lastSavedSnapshot.shape === snap.shape
   ) {
     return
   }
@@ -216,6 +330,7 @@ function maybePersistOrderEdit() {
         // Only send `material` when set — backend rejects empty strings on
         // material because it's a CharField with choices.
         ...(snap.material ? { material: snap.material } : {}),
+        shape: snap.shape,
         with_relief: snap.withRelief,
         relief_note: snap.reliefNote,
       })
@@ -227,7 +342,12 @@ function maybePersistOrderEdit() {
   }, 400)
 }
 
-watch([material, withRelief, reliefNote], maybePersistOrderEdit)
+watch([material, withRelief, reliefNote, shape], maybePersistOrderEdit)
+
+// When the customer switches shape inside the editor, repaint the mask
+// immediately. For geometric shapes that means a new primitive polygon;
+// for contorneado, leave whatever auto-cut mask exists alone.
+watch(shape, () => applyGeometricMaskIfNeeded())
 
 // === Save / Continue ===
 
@@ -307,16 +427,21 @@ async function bootstrapEditor() {
       material: order.value.material,
       withRelief: order.value.with_relief,
       reliefNote: order.value.relief_note,
+      shape: order.value.shape,
     }
     material.value = order.value.material
     withRelief.value = order.value.with_relief
     reliefNote.value = order.value.relief_note
+    shape.value = order.value.shape
     // Push the initial palette into the canvas so a returning customer with
     // a material already chosen sees the right halo color on Auto cut.
     canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
 
     const localUrl = await fetchAsObjectUrl(original)
     await loadImageIntoEditor(localUrl)
+    // For geometric shapes, push the primitive mask now that the image is
+    // loaded (we have the natural dimensions to size it against).
+    applyGeometricMaskIfNeeded()
   } catch (e) {
     console.error('[editor] bootstrap failed:', e)
     toast.error('No pudimos cargar tu pedido.')
@@ -386,6 +511,7 @@ onMounted(bootstrapEditor)
       <EditorToolbar
         :is-processing="isProcessing"
         :is-open-cv-ready="openCvReady"
+        :shape="shape"
         @auto-cut="onAutoCut"
       />
 
@@ -415,6 +541,13 @@ onMounted(bootstrapEditor)
           {{ autoCropError }}
         </div>
         <div
+          v-else-if="shape !== 'contorneado'"
+          class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
+          data-testid="editor-shape-fixed"
+        >
+          Forma <strong>{{ shape }}</strong> aplicada. Ajustá el margen abajo.
+        </div>
+        <div
           v-else-if="!openCvReady"
           class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
           data-testid="editor-loading-engine"
@@ -438,11 +571,13 @@ onMounted(bootstrapEditor)
         :mask-visible="maskVisible"
         :options="cropOptions"
         :material="material"
+        :shape="shape"
         :with-relief="withRelief"
         :relief-note="reliefNote"
         @update:mask-visible="maskVisible = $event"
         @update:options="cropOptions = $event"
         @update:material="material = $event"
+        @update:shape="shape = $event"
         @update:with-relief="withRelief = $event"
         @update:relief-note="reliefNote = $event"
       />

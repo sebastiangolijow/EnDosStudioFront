@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { Shape } from '@/types/order'
 
 interface Props {
   /** Are we currently running the auto-crop pipeline? Disables the button. */
   isProcessing: boolean
   /** Has OpenCV.js finished loading? Disables tools that need it. */
   isOpenCvReady: boolean
+  /** Cut shape — Auto cut only makes sense for contorneado. */
+  shape: Shape
 }
 
 const props = defineProps<Props>()
@@ -14,7 +17,12 @@ defineEmits<{
   'auto-cut': []
 }>()
 
-const autoCutDisabled = computed(() => props.isProcessing || !props.isOpenCvReady)
+// Auto cut is meaningful only for `contorneado` — for geometric shapes
+// the mask is a fixed primitive, so the button is disabled (and visually
+// muted) to avoid implying it does something.
+const autoCutDisabled = computed(
+  () => props.isProcessing || !props.isOpenCvReady || props.shape !== 'contorneado',
+)
 
 /**
  * Tools shown in the toolbar. Per the M2 scope decision (CLAUDE.md "Relief

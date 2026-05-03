@@ -167,7 +167,7 @@ test.describe('order config', () => {
     await expect(page.getByTestId('summary-continue')).toBeEnabled({ timeout: 5_000 })
   })
 
-  test('shape: contorneado is the default and shows the Refinar contorno CTA', async ({
+  test('shape: contorneado is the default and the editor CTA is always visible', async ({
     page,
   }) => {
     const customer = seedActiveCustomer()
@@ -179,11 +179,12 @@ test.describe('order config', () => {
 
     // Default shape is contorneado — its card carries the selected style.
     await expect(page.getByTestId('shape-contorneado')).toHaveAttribute('aria-pressed', 'true')
-    // Refine-contour bar visible (only relevant for contorneado).
+    // Volver-al-editor bar always visible — every shape passes through the
+    // editor for margin adjustment, not just contorneado.
     await expect(page.getByTestId('refine-contour-bar')).toBeVisible()
   })
 
-  test('shape: picking a geometric shape hides the Refinar contorno CTA', async ({ page }) => {
+  test('shape: picking a geometric shape keeps the editor CTA visible', async ({ page }) => {
     const customer = seedActiveCustomer()
     const accessToken = await loginAs(page, customer)
     const draftUuid = seedDraftForCustomer(customer)
@@ -193,8 +194,8 @@ test.describe('order config', () => {
 
     await page.getByTestId('shape-circulo').click()
     await expect(page.getByTestId('shape-circulo')).toHaveAttribute('aria-pressed', 'true')
-    // Refining the contour doesn't make sense for a circle — the CTA hides.
-    await expect(page.getByTestId('refine-contour-bar')).toBeHidden()
+    // Geometric shapes still go through the editor (for margin adjustment).
+    await expect(page.getByTestId('refine-contour-bar')).toBeVisible()
   })
 
   test('shape: choice persists to the backend on Continuar', async ({ page }) => {

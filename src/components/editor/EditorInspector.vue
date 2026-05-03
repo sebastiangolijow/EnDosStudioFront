@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { type AutoCropOptions } from '@/composables/useAutoCropWorker'
-import { type Material, MATERIAL_LABELS } from '@/types/order'
+import { type Material, MATERIAL_LABELS, type Shape, SHAPE_LABELS } from '@/types/order'
+import { MATERIAL_TEXTURE_URLS } from '@/utils/materialColors'
 
 interface Props {
   /** Show/hide the mask layer. v-model:mask-visible. */
@@ -9,6 +10,8 @@ interface Props {
   options: AutoCropOptions
   /** Currently selected material — drives halo color + persists to draft. */
   material: Material | ''
+  /** Cut shape — drives whether Auto cut is meaningful (contorneado only). */
+  shape: Shape
   /** Whether the customer wants relief on this sticker. */
   withRelief: boolean
   /** Free-text note describing where relief should go. Shown when withRelief. */
@@ -21,9 +24,12 @@ defineEmits<{
   'update:maskVisible': [value: boolean]
   'update:options': [value: AutoCropOptions]
   'update:material': [value: Material | '']
+  'update:shape': [value: Shape]
   'update:withRelief': [value: boolean]
   'update:reliefNote': [value: string]
 }>()
+
+const SHAPES: Shape[] = ['contorneado', 'cuadrado', 'circulo', 'redondeadas']
 
 /**
  * Materials available for the in-editor compact picker. Same enum the
@@ -65,6 +71,93 @@ const SWATCH_CLASSES: Record<Material, string> = {
     aria-label="Ajustes del recorte"
     class="flex flex-col gap-5 rounded-lg border border-border bg-surface-1 p-5"
   >
+    <!-- ===== Forma ===== -->
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
+      Forma
+    </h2>
+    <div class="grid grid-cols-2 gap-2">
+      <button
+        v-for="s in SHAPES"
+        :key="s"
+        type="button"
+        :class="[
+          'flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs transition',
+          shape === s
+            ? 'border-primary bg-primary/10 text-primary'
+            : 'border-border text-text hover:bg-surface-2',
+        ]"
+        :data-testid="`inspector-shape-${s}`"
+        :aria-pressed="shape === s"
+        @click="$emit('update:shape', s)"
+      >
+        <svg
+          v-if="s === 'contorneado'"
+          viewBox="0 0 24 24"
+          class="size-4 shrink-0"
+          aria-hidden="true"
+        >
+          <path
+            d="M5 8 Q4 4 9 5 T15 4 Q21 5 19 11 T22 19 Q19 22 14 20 T7 22 Q2 20 4 14 T5 8 Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </svg>
+        <svg
+          v-else-if="s === 'cuadrado'"
+          viewBox="0 0 24 24"
+          class="size-4 shrink-0"
+          aria-hidden="true"
+        >
+          <rect
+            x="4"
+            y="4"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </svg>
+        <svg
+          v-else-if="s === 'circulo'"
+          viewBox="0 0 24 24"
+          class="size-4 shrink-0"
+          aria-hidden="true"
+        >
+          <circle
+            cx="12"
+            cy="12"
+            r="8"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </svg>
+        <svg
+          v-else
+          viewBox="0 0 24 24"
+          class="size-4 shrink-0"
+          aria-hidden="true"
+        >
+          <rect
+            x="4"
+            y="4"
+            width="16"
+            height="16"
+            rx="4"
+            ry="4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </svg>
+        <span class="leading-tight">{{ SHAPE_LABELS[s] }}</span>
+      </button>
+    </div>
+
+    <hr class="border-border">
+
     <!-- ===== Material ===== -->
     <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
       Material
@@ -87,10 +180,26 @@ const SWATCH_CLASSES: Record<Material, string> = {
         :aria-pressed="material === m"
         @click="$emit('update:material', m)"
       >
+        <!-- Real texture if bundled, CSS gradient otherwise. The wrapper
+             keeps the size-6 circle constant so the row layout doesn't
+             jiggle when textures finish loading. -->
         <span
-          :class="['size-6 shrink-0 rounded-full border border-border', SWATCH_CLASSES[m]]"
+          class="size-6 shrink-0 overflow-hidden rounded-full border border-border"
           aria-hidden="true"
-        />
+        >
+          <img
+            v-if="MATERIAL_TEXTURE_URLS[m]"
+            :src="MATERIAL_TEXTURE_URLS[m]"
+            :alt="''"
+            class="size-full object-cover"
+            loading="lazy"
+            decoding="async"
+          >
+          <span
+            v-else
+            :class="['block size-full', SWATCH_CLASSES[m]]"
+          />
+        </span>
         <span class="leading-tight">{{ MATERIAL_LABELS[m] }}</span>
       </button>
     </div>
