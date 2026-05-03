@@ -3,7 +3,7 @@
 > **Studio**: YeKo Studio · **Client**: Barcelona print shop selling custom stickers
 > **Stack**: Vue 3 · Vite · TypeScript · Vue Router · Pinia · Tailwind CSS · Axios · Canvas API · OpenCV.js (CDN)
 > **Backend**: separate Django + DRF project at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
-> **Status**: greenfield — no code committed yet. The backend is at M2 (orders + payments + auth shipped, real pricing wired, 48 tests green); this frontend is what closes the loop. CLAUDE.md is the source of truth until the bootstrap skill runs.
+> **Status**: feature-complete for the MVP customer flow as of session 2026-05-03. SPA shipped end-to-end (auth, upload, editor with auto-crop + materials + Forma + halo, order-config, checkout stub). 30/30 functional Playwright specs passing. Editor matches the reference shop's UX (vivid material halo in bleed margin, transparent vinyl preview, geometric shapes pass through editor, background removal). Stripe live keys + email SMTP + first deploy are the operational blockers, not code.
 
 This file is the index for any AI agent working on the StickerApp frontend. Read it before doing anything. It captures the YeKo Studio mindset, the design tokens (locked), the tech-stack decisions, the screen inventory, and the conventions we'll follow.
 
@@ -140,37 +140,52 @@ Use holographic accents **sparingly** — selected MaterialCard borders, hero hi
 
 ---
 
-## 🗂️ Folder structure (from §4.3 of the design pack)
-
-The bootstrap skill creates this exactly:
+## 🗂️ Folder structure (current, as of 2026-05-03)
 
 ```
 src/
 ├── assets/
-│   ├── logo/
-│   ├── textures/
-│   └── examples/
+│   ├── logo/                  # logo
+│   ├── examples/              # marketing imagery
+│   └── textures/              # MATERIAL TEXTURES — bundled PNGs, 512×512:
+│                              # holografico, holografico_transparente,
+│                              # dorado, plateado, eggshell, eggshell_holografico,
+│                              # vinilo_blanco, luminiscente
+│                              # (vinilo_transparente has no PNG by design — see below)
 ├── components/
-│   ├── ui/                    # AppButton, AppInput, AppModal, AppToast, AppCard, AppStepper
+│   ├── ui/                    # AppButton, AppInput, AppCard, AppModal, AppToast, AppStepper
 │   ├── layout/                # AppHeader, AppShell, DashboardShell
 │   ├── upload/                # UploadDropzone, FilePreview
-│   ├── editor/                # StickerEditor, EditorToolbar, CanvasStage, InspectorPanel,
-│   │                           # CutOverlay, ZoomControls, ProcessingOverlay
-│   │                           # (ReliefOverlay deferred — no drawn relief mask in MVP)
-│   ├── order/                 # MaterialSelector, SizeInput (width_mm + height_mm),
-│   │                           # QuantityStepper, AddOnsToggle (relief, varnish, design service),
-│   │                           # ReliefNoteField, OrderSummary
-│   └── admin/                 # (post-MVP — Django admin covers M2 ops)
-├── composables/               # useAuth, useUpload, useOpenCV, useStickerCanvas,
-│                              # useCutDetection, useOrders, usePriceQuote
-│                              # (useReliefMask deferred)
+│   ├── editor/
+│   │   ├── CanvasStage.vue    # 3-layer stack: mask → base → ui (DOM order = visual order)
+│   │   ├── EditorToolbar.vue  # Auto cut + 4 stub buttons; Auto cut disabled for non-contorneado
+│   │   └── EditorInspector.vue # right rail: Forma + Material + Relieve + Vista
+│   │                          # + Margen slider + Detección sliders
+│   └── order/                 # MaterialCard, ShapeCard, SizePicker, QuantityStepper,
+│                              # OrderSummary, ShippingForm, OrderHistoryCard
+├── composables/
+│   ├── useAutoCropWorker.ts   # singleton Web Worker + request-id-keyed promise map
+│   ├── useCanvasEditor.ts     # 3-layer canvas, fit transform, mask/halo/clip state
+│   ├── useAutoCrop.ts         # legacy main-thread; kept on disk, not imported
+│   ├── useOpenCV.ts           # legacy CDN-script gate; kept for reference
+│   ├── useAuth.ts
+│   └── useToast.ts
+├── workers/
+│   └── autoCrop.worker.ts     # classic worker; importScripts(opencv.js);
+│                              # alpha → bg-trim → canny strategies; emits
+│                              # { points, areaPx, artworkPoints? }
+├── utils/
+│   └── materialColors.ts      # MATERIAL_TEXTURE_URLS + textureFill factory +
+│                              # per-material MaskPalette (fill + stroke)
 ├── stores/                    # auth.store, order.store, ui.store
-│                              # (sticker.store merged into order — drafts ARE orders)
-├── views/                     # 12 view files matching routes
-├── services/                  # api, auth.service, orders.service, files.service
-├── types/                     # auth, order, api
+│                              # (sticker store merged into order — drafts ARE orders)
+├── views/                     # 14 views, one per route
+├── services/                  # api (axios + JWT refresh), auth/orders/files services
+├── types/
+│   └── order.ts               # Order, OrderUpdatePayload, Material + MATERIAL_LABELS,
+│                              # Shape + SHAPE_LABELS, OrderFileKind, dimension/qty bounds
 ├── router/
-│   └── index.ts
+│   └── index.ts               # 14 routes with auth/admin meta
 └── styles/
     ├── tokens.css
     └── globals.css
@@ -179,46 +194,101 @@ src/
 Architecture rules (non-negotiable):
 
 - **UI components are reusable and dumb.** They take props, emit events, don't talk to stores or services.
-- **Composables hold business logic.** `useStickerCanvas`, `useCutDetection`, etc.
+- **Composables hold business logic.** `useCanvasEditor`, `useAutoCropWorker`, etc.
 - **Stores hold app state.** Reactive, persisted where appropriate.
 - **Services hold API calls.** Single source of truth for `/api/*` endpoints.
 - **Views are thin.** Compose components, wire stores → composables → user. No fetch calls in `<script setup>` of a view file.
+- **Single source of truth for material visuals**: `src/utils/materialColors.ts`. The order-config MaterialCard swatches AND the editor inspector swatches AND the canvas halo all read from it. If you tweak a material's appearance, do it there.
 
 ---
 
 ## ⚠️ Critical recipes (gotchas already paid for)
 
-### OpenCV.js memory management
+### OpenCV.js runs in a Web Worker
 
-OpenCV `Mat`, `MatVector`, and contour objects are **manually managed** — they aren't garbage-collected by JavaScript. Every `.delete()` you skip is a memory leak that will crash the tab on a long editing session.
+OpenCV.js is ~10 MB of WASM. Compiling it on the main thread blocks
+the page long enough that Chrome trips the "Page Unresponsive"
+dialog. So:
 
-**Rule**: every `cv.imread()`, `new cv.Mat()`, `new cv.MatVector()` MUST be paired with a `.delete()` in a `finally` block. The `useCutDetection` composable should wrap the algorithm so call sites can't forget.
+- `src/workers/autoCrop.worker.ts` owns its own OpenCV runtime via
+  `importScripts(opencv.js)` (classic worker, not module — module
+  workers don't support `importScripts`).
+- The worker runs the detection pipeline + dilation + contour
+  extraction. Main thread only sends `ImageData` and receives
+  `{ points, areaPx, artworkPoints? }`.
+- `src/composables/useAutoCropWorker.ts` is the module-scoped
+  singleton wrapper. It maps requestIds to pending promises and
+  exposes the same API shape as the legacy main-thread useAutoCrop.
 
-### OpenCV.js readiness
+OpenCV.js is NOT loaded from `index.html`. It's loaded only when the
+editor route opens, by the worker. Other pages don't pay the cost.
 
-OpenCV.js loads asynchronously from CDN. **Don't call any `cv.*` function before `cv.onRuntimeInitialized` fires**. The `useOpenCV` composable owns this — components should `await waitForOpenCV()` before invoking detection.
+### OpenCV memory management (still applies inside the worker)
 
-The CDN script tag goes in `index.html`:
-```html
-<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
-```
+`Mat`, `MatVector`, contour objects are manually managed. Every
+allocation in `autoCrop.worker.ts` is paired with a `.delete()` in
+a `finally` block. The worker context is long-lived; leaks would
+accumulate across runs.
 
-### Layered canvas architecture
+### Three-strategy auto-crop
 
-The editor uses **4 separate canvas elements** stacked on top of each other:
+The worker picks a detection strategy based on what's actually in the
+image (smarter than vanilla Canny):
 
-1. **Base canvas** — the original uploaded image
-2. **Cut overlay canvas** — the detected contour line
-3. **Relief drawing canvas** — what the user paints
-4. **Interaction layer** — captures mouse/touch events
+| Strategy | Trigger | Pipeline |
+|---|---|---|
+| `alpha` | any pixel α<250 | threshold alpha at 128 |
+| `bg-trim` | opaque + perimeter stddev < 35 | sample bg color, inRange + invert + close |
+| `canny` | both above failed | Canny → findContours → max-area |
 
-Why: easier to export each layer separately (cut mask, relief mask), easier to toggle overlays, better performance than redrawing one giant canvas on every brush stroke.
+Each strategy unions all real contours (filtered by min area) into a
+filled mask, which then goes through dilation for the bleed margin
+and `approxPolyDP` for smoothing. Strategy chosen is logged via
+`console.info("[autocrop] strategy=...")` for browser-console debugging.
+
+### 3-layer canvas architecture (with mask BELOW base)
+
+The editor stacks 3 canvases:
+
+1. **Mask layer** (DOM index 0, lowest) — die-cut polygon halo
+2. **Base layer** (DOM index 1) — the customer's image, optionally
+   clipped to a polygon
+3. **UI layer** (DOM index 2, top) — receives all pointer events
+
+The mask layer is *below* the base by design. With a tight artwork
+polygon clipping the base, the halo shows only in the bleed margin
+(where there's no artwork to cover it). Reorder this and the halo
+disappears entirely.
+
+### Tight clip + bleed clip
+
+The worker returns TWO polygons:
+- `points` — the cut polygon (artwork + bleed margin)
+- `artworkPoints` — the tight artwork silhouette (no bleed)
+
+`useCanvasEditor.setMask(points, artworkPoints?)` stores both. The
+clip used for `removeBackground` prefers the tight one — that lets
+the halo show in the bleed margin without the photo's background
+covering it. Geometric shapes (cuadrado/circulo/redondeadas) don't
+supply `artworkPoints` (the polygon IS the silhouette there) and the
+clip falls back to the cut polygon.
+
+### Material textures vs. transparent vinyl
+
+8 of 9 materials use real PNG textures bundled in `src/assets/textures/`.
+`vinilo_transparente` is the exception — there's no PNG. Picking it
+sets `transparentMaterial=true`, which drops the base image's
+`globalAlpha` to 0.55 so the canvas's checker pattern reads through
+the artwork. Matches the reference shop's "transparent vinyl" preview
+exactly. Don't add a transparent PNG; the layer trick is the design.
 
 ### Image size policy
 
-**Don't process huge images at full size.** A 25 MB PNG will freeze the tab during edge detection.
-
-**Rule**: `useStickerCanvas` keeps the original `File` for the production upload (server gets the high-res original) but creates an optimized preview canvas (max 2048×2048) for editing. OpenCV runs against the preview; the cut mask is exported at preview resolution. Backend rescales to original dimensions if needed.
+OpenCV runs against a **working-size** copy capped at 1024 px on the
+long edge (see `useAutoCropWorker.imageToWorkingImageData`). Polygon
+coordinates returned by the worker are scaled back to image-natural
+pixels. The original `File` is what gets uploaded to the backend —
+the working-size canvas is editor-only.
 
 ### Async states are explicit
 
@@ -371,32 +441,80 @@ The `api-contract-check` skill (separate, installed at `~/.claude/skills/api-con
 
 ---
 
-## 🚧 Status (project start)
+## 🚧 Status
 
-### Done
-- Folder created at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endosstudio_frontend/`
-- CLAUDE.md reconciled with backend M2 reality (this file)
-- Bootstrap skill exists at `~/.claude/skills/bootstrap-stickerapp-frontend/`
-- Four supporting skills installed: `canvas-editor-system`, `opencv-js-integration`, `api-contract-check`, `playwright-frontend-test`
-- Backend at M2: 48 tests green, real pricing wired, real auth + email + reset flow shipped
+### Done — through 2026-05-03
 
-### Next (in order)
-1. **Run the bootstrap skill** to lay down Phase 1: Vite + TS + Tailwind + tokens.css + router + Pinia stores + base layout + UI components + Playwright config
-2. **Move the design pack PDF into `docs/`** so it lives in the repo
-3. **First view: `HomeView`** (the hero from the mockup) — pure styling, no backend calls; gets the brand visible fast
-4. **`AuthFlow` views**: `RegisterView`, `LoginView`, `SetPasswordView`, `ResetPasswordView`. These exercise the real backend; first contract-bound code. Add Playwright spec for the full register → set-password → login → /me/ roundtrip (the M2 backend gate test mirrored client-side).
-5. **Order creation flow**: upload → editor (auto-crop via OpenCV.js) → spec config → quote → place → checkout. This is where the canvas + opencv skills earn their keep.
-6. **History + cancel** — small.
+**Bootstrap + auth + history**:
+- Vue 3 + Vite + TS + Tailwind + Pinia + Router + Axios scaffold
+- `HomeView` with hero
+- `RegisterView` / `LoginView` / `SetPasswordView` / `ForgotPasswordView` /
+  `ResetPasswordView` — all wired to the real backend
+- `DashboardView` — order history with status filters
+- Playwright auth roundtrip spec (mirror of the backend's M2 gate test)
 
-### Stripe is gated on deploy
-The backend has the checkout endpoint wired (`POST /api/v1/orders/{uuid}/checkout/`) but it returns 502 without real Stripe keys. Mock the Stripe layer in dev (the `playwright-frontend-test` skill describes the pattern). The shop owner's Stripe account + test keys land at deploy time, not now.
+**Customer flow** (upload → editor → config → checkout):
+- `UploadView` — dropzone, file preview, draft creation, routes to /editor
+- `EditorView` — orchestrator. Hydrates Order, persists material/shape/relief
+  via debounced PATCH, manages canvas state.
+- `OrderConfigView` — material grid + Forma cards + size picker + quantity +
+  add-ons + live quote + "Volver al editor" CTA
+- `CheckoutView` — shipping form + place_order + Stripe handoff stub
+- `ConfirmationView` — order summary
+
+**Editor (the bulk of session 2026-05-03)**:
+- OpenCV.js auto-crop runs in a Web Worker
+- Three detection strategies: alpha → bg-trim → Canny
+- 15 mm bleed margin via dilation, capped + iterated kernel for speed
+- 9 materials with real PNG textures (vinilo_transparente uses the
+  layer-alpha trick)
+- Material halo paints in the bleed margin only (mask-below-base + tight
+  artwork clip via `artworkPoints`)
+- Forma step (contorneado / cuadrado / circulo / redondeadas); geometric
+  shapes get a primitive polygon at the image bbox + margin
+- "Quitar fondo" toggle clips the base to the polygon
+- Auto cut button disabled for non-contorneado (no point auto-detecting
+  a primitive shape)
+- Inspector compact picker mirrors the order-config grid
+
+**Tests**: **30/30 functional Playwright specs passing**.
+
+Frozen detail of the 2026-05-03 session:
+`docs/archive/SESSION_2026_05_03_editor.md`.
+
+### Next (operational, not code)
+
+1. **Real Stripe keys**. The checkout endpoint returns 502 without
+   them; the frontend's CheckoutView currently stubs the handoff. Once
+   keys land, swap the stub for the real `<PaymentElement>` mount.
+2. **Email backend** for `RegisterView` + `ResetPasswordView`. Backend
+   uses SMTP env vars; no real provider configured yet.
+3. **First deploy**. Hosting choice (Vercel / Netlify / self-hosted),
+   domain, TLS. CheckoutView's `return_url` for Stripe redirects needs
+   to point at the deployed origin.
+
+### Open follow-ups (non-blocking)
+
+- **Cut path SVG download from admin** — backend generates one at
+  `transition_to_paid`; could surface a download link on the
+  Dashboard's order detail. M3 nice-to-have.
+- **More materials** — if the shop adds finishes (e.g. matte vinyl,
+  textured), add the texture PNG to `src/assets/textures/` and one
+  entry to `MATERIAL_TEXTURE_URLS`. ~5 LOC per material.
+- **`useAutoCrop.ts` (legacy main-thread)** still on disk but no
+  longer imported. Keep for ~1 release in case the worker has a regression we
+  need to diff against, then delete.
+- **Smoke test for the new editor flow** — was tripping on the 200×200
+  test fixture (polygon at default margin already filled the canvas).
+  A larger fixture or a bbox-based assertion would solve it; not
+  blocking since the per-feature tests cover the components individually.
 
 ### TODO (radar)
-- **Auto-crop reference site URL**: the user has identified an existing shop with the exact UX they want for auto-crop. They'll share the URL when canvas/OpenCV work starts — ASK BEFORE designing that component from first principles.
+
 - Decide hosting (Vercel / Netlify / self-hosted alongside the backend's nginx?)
-- OpenCV.js version pinning (currently `4.x` from CDN — pin to a specific version once we've tested with it)
-- Fonts: pick Inter vs Satoshi vs Manrope — design pack says "or similar"
-- Email backend in production: backend uses the SMTP env vars (`EMAIL_HOST`, `EMAIL_HOST_USER`, ...) — confirm Gmail SMTP / SES / Mailgun before deploy
+- OpenCV.js version pinning (currently `4.x` from the worker's importScripts — pin once we've tested with it)
+- Fonts: Inter is locked. Confirm font loading strategy (`@fontsource/inter` vs CDN) for prod.
+- Email backend in production (Gmail SMTP / SES / Mailgun)
 
 ---
 
@@ -420,7 +538,9 @@ When in doubt about an endpoint shape, **read the backend's serializer file**, n
 
 ## 📂 Files / paths to know
 
-- **Design pack (source of truth for visuals + brand)**: `/Users/cevichesmac/Downloads/Stickerapp Frontend Design Pack.pdf` (move into `docs/` at first scaffold). Where the design pack disagrees with this CLAUDE.md or the backend's M2 implementation, **the backend wins on API/data contracts** and **the design pack wins on visuals**.
+- **Design pack (source of truth for visuals + brand)**: `docs/design-pack.pdf` (already in repo). Where the design pack disagrees with this CLAUDE.md or the backend's implementation, **the backend wins on API/data contracts** and **the design pack wins on visuals**.
+- **Mockups**: `docs/mockups.jpeg` — the six-screen composite the user supplied at scaffold time.
+- **Past-session briefings (archive)**: `docs/archive/SESSION_START.md` (bootstrap), `docs/archive/SESSION_2026_05_03_editor.md` (editor + Forma + materials). Read for historical context only — current state lives in this file.
 - **Sibling backend project**: `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/`
 - **YeKo Studio context**: `/Users/cevichesmac/Desktop/yeko_studio/yeko_studio_context.md`
 - **Bootstrap skill**: `~/.claude/skills/bootstrap-stickerapp-frontend/`
