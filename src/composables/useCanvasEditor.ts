@@ -51,6 +51,11 @@ export function useCanvasEditor() {
   const image = shallowRef<ImageState | null>(null)
   /** Polygon points in image-natural pixels — survives resize. */
   const maskPoints = shallowRef<ImagePoint[] | null>(null)
+  /** Tight artwork silhouette (no bleed). When present and removeBackground
+   *  is on, the base layer is clipped to this instead of `maskPoints` so
+   *  the halo shows in the bleed margin without the photo's background
+   *  occluding it. Set by setMask(points, artworkPoints?). */
+  const artworkPoints = shallowRef<ImagePoint[] | null>(null)
   /** Whether the mask layer is visible. Toggled by EditorInspector. */
   const maskVisible = ref(true)
   /** Halo + stroke colors. Defaults to brand orange; the editor swaps in a
@@ -149,19 +154,19 @@ export function useCanvasEditor() {
     ctx.clearRect(0, 0, rect.width, rect.height)
     if (!fit) return
 
-    // Background-removal mode: clip drawing to the mask polygon so pixels
-    // outside the artwork's silhouette become transparent. The customer
-    // sees the checker pattern (CanvasStage's CSS bg) instead of the
-    // original light background, matching the reference shop's UX. We
-    // only clip when there's a real polygon — without one, the customer
-    // would see nothing at all.
-    const shouldClip =
-      removeBackground.value && maskPoints.value && maskPoints.value.length > 0
+    // Background-removal mode: clip drawing so the photo's background is
+    // hidden. Prefer the TIGHT artwork polygon when available — that lets
+    // the colored halo show in the bleed margin between the artwork and
+    // the cut line, matching the reference shop. Fall back to the cut
+    // polygon (which includes the bleed) for geometric shapes and for
+    // strategies that didn't produce a tight contour.
+    const clipPoints = artworkPoints.value ?? maskPoints.value
+    const shouldClip = removeBackground.value && clipPoints && clipPoints.length > 0
     if (shouldClip) {
       ctx.save()
       ctx.beginPath()
-      for (let i = 0; i < maskPoints.value!.length; i++) {
-        const css = imageToCss(maskPoints.value![i])
+      for (let i = 0; i < clipPoints!.length; i++) {
+        const css = imageToCss(clipPoints![i])
         if (!css) continue
         if (i === 0) ctx.moveTo(css.x, css.y)
         else ctx.lineTo(css.x, css.y)
@@ -347,9 +352,13 @@ export function useCanvasEditor() {
     drawMaskLayer()
   }
 
-  /** Set the polygon — typically the result of useAutoCrop().run(). */
-  function setMask(points: ImagePoint[]): void {
+  /** Set the polygon — typically the result of useAutoCrop().run().
+   *  Optional `artwork` is the tight silhouette (no bleed) used as the
+   *  clip mask when removeBackground is on; defaults to null (clip uses
+   *  the cut polygon directly, appropriate for geometric shapes). */
+  function setMask(points: ImagePoint[], artwork: ImagePoint[] | null = null): void {
     maskPoints.value = points
+    artworkPoints.value = artwork
     drawMaskLayer()
     // Background-removal clips the base layer to the polygon, so a new
     // polygon means we need to repaint the base too.
@@ -358,6 +367,7 @@ export function useCanvasEditor() {
 
   function clearMask(): void {
     maskPoints.value = null
+    artworkPoints.value = null
     drawMaskLayer()
     if (removeBackground.value) drawBaseLayer()
   }

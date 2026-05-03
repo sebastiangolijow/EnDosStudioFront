@@ -50,7 +50,13 @@ export interface ImagePoint {
 }
 
 export type DieCutResult =
-  | { kind: 'ok'; points: ImagePoint[]; areaPx: number }
+  | {
+      kind: 'ok'
+      points: ImagePoint[]
+      areaPx: number
+      /** Tight artwork silhouette without bleed (for base-layer clipping). */
+      artworkPoints?: ImagePoint[]
+    }
   | { kind: 'no-contour-found' }
 
 type WorkerMessage =

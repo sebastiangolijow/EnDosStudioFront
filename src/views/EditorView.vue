@@ -239,7 +239,10 @@ async function onAutoCut() {
       canvasRef.value.clearMask()
       return
     }
-    canvasRef.value.setMask(result.points)
+    // Pass the tight artwork polygon too so the canvas can use it as the
+    // clip mask when removeBackground is on. Lets the halo show in the
+    // bleed margin without the photo's background hiding it.
+    canvasRef.value.setMask(result.points, result.artworkPoints ?? null)
   } catch {
     toast.error('Falló la detección de contorno. Probá de nuevo.')
   }

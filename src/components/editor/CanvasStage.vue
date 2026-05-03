@@ -37,7 +37,8 @@ const {
  */
 defineExpose({
   loadImage: (src: string) => loadImage(src),
-  setMask: (points: ImagePoint[]) => setMask(points),
+  setMask: (points: ImagePoint[], artwork: ImagePoint[] | null = null) =>
+    setMask(points, artwork),
   clearMask: () => clearMask(),
   setMaskVisible: (v: boolean) => setMaskVisible(v),
   setMaskPalette: (palette: MaskPalette) => setMaskPalette(palette),

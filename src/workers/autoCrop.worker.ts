@@ -135,7 +135,16 @@ interface ImagePoint {
 }
 
 type DieCutResult =
-  | { kind: 'ok'; points: ImagePoint[]; areaPx: number }
+  | {
+      kind: 'ok'
+      /** Cut polygon in image-natural pixels (artwork + bleed). */
+      points: ImagePoint[]
+      areaPx: number
+      /** Tight artwork silhouette (no bleed). Used by the canvas to clip
+       *  the base image so the halo shows in the bleed area without the
+       *  photo's background occluding it. Same coordinates as `points`. */
+      artworkPoints?: ImagePoint[]
+    }
   | { kind: 'no-contour-found' }
 
 type IncomingMessage =
@@ -329,6 +338,12 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     const dilatedContours = new cv.MatVector()
     const hierarchy2 = new cv.Mat()
     const approx = new cv.Mat()
+    // Tight (pre-dilate) contour — the artwork silhouette without bleed.
+    // The main thread uses it as a clip mask so the halo shows in the
+    // bleed margin without the photo's white background occluding it.
+    const tightContours = new cv.MatVector()
+    const hierarchyTight = new cv.Mat()
+    const tightApprox = new cv.Mat()
 
     try {
       const totalPixels = workingWidth * workingHeight
@@ -490,6 +505,46 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       // Telemetry — useful in browser devtools when debugging a problem image.
       console.info(`[autocrop] strategy=${strategyUsed} hasAlpha=${inspection.hasAlpha} bgStdDev=${inspection.bgStdDev.toFixed(1)}`)
 
+      // Extract the tight artwork contour BEFORE dilating. We approxPolyDP
+      // it down to keep the postMessage payload small. The main thread
+      // uses it to clip the base layer, exposing the halo in the bleed
+      // area without the photo's background interfering.
+      const tightArtworkPoints: ImagePoint[] = []
+      try {
+        cv.findContours(
+          filled,
+          tightContours,
+          hierarchyTight,
+          cv.RETR_EXTERNAL,
+          cv.CHAIN_APPROX_SIMPLE,
+        )
+        if (tightContours.size() > 0) {
+          // Pick the largest tight contour. We could union them all, but
+          // a single envelope is fine for clip-masking — even multi-piece
+          // artwork will have a "main" piece that the customer cares about.
+          let tIdx = 0
+          let tArea = -1
+          for (let i = 0; i < tightContours.size(); i++) {
+            const a = cv.contourArea(tightContours.get(i))
+            if (a > tArea) {
+              tArea = a
+              tIdx = i
+            }
+          }
+          cv.approxPolyDP(tightContours.get(tIdx), tightApprox, polyEpsilon, true)
+          for (let i = 0; i < tightApprox.rows; i++) {
+            tightArtworkPoints.push({
+              kind: 'image',
+              x: tightApprox.intAt(i, 0) * scaleX,
+              y: tightApprox.intAt(i, 1) * scaleY,
+            })
+          }
+        }
+      } catch {
+        // Tight contour is a nice-to-have; bleed polygon is the source of
+        // truth. Continue if extraction fails.
+      }
+
       let sourceMaskForExtract: MatLike = filled
       if (dilateRadiusWorking > 0) {
         // Cap the kernel at 21×21 (radius 10) and iterate. A single huge
@@ -558,6 +613,7 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
           kind: 'ok',
           points,
           areaPx: outArea * scaleX * scaleY,
+          artworkPoints: tightArtworkPoints.length >= 3 ? tightArtworkPoints : undefined,
         },
       })
     } finally {
@@ -579,6 +635,9 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       dilatedContours.delete()
       hierarchy2.delete()
       approx.delete()
+      tightContours.delete()
+      hierarchyTight.delete()
+      tightApprox.delete()
     }
   } catch (e) {
     post({
