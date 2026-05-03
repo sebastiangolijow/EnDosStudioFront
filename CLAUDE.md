@@ -518,6 +518,87 @@ Frozen detail of the 2026-05-03 session:
 
 ---
 
+## 🧭 Decision log
+
+Open questions where there's a working recommendation but no locked
+choice yet. Update each entry to **Decided (YYYY-MM-DD): X** when the
+call is made; until then it's an open question with the tradeoffs on
+record so we don't relitigate from scratch next time.
+
+> The backend has its own decision log at `endossutdio_backend/CLAUDE.md`
+> for its share (email provider, hosting target, Stripe account owner,
+> webhook secret rotation, media storage). This section covers the
+> frontend-specific calls.
+
+### Frontend hosting target
+
+- **Status**: open. Coupled with the backend's hosting decision but
+  separable.
+- **Recommendation**: **Vercel or Netlify** for the SPA. Free tier
+  covers us. Auto-deploy from GitHub + preview URLs per PR.
+  Alternative: serve from the backend's nginx as a single origin.
+- **Tradeoffs**:
+  - *Vercel/Netlify*: zero ops, automatic TLS, preview deploys,
+    excellent DX. Two origins → CORS config + cookie domain
+    considerations. Free tier limits (Vercel bandwidth: 100 GB/mo)
+    are far above what an SMB needs.
+  - *Self-host behind backend nginx*: one origin, no CORS, simpler
+    cookie story. Loses preview URLs. nginx needs SPA fallback
+    (`try_files $uri $uri/ /index.html`).
+- **Trigger to decide**: when the deploy task starts.
+
+### Font loading strategy
+
+- **Status**: open. Inter is locked as the primary font (CLAUDE.md
+  Typography section). Loading mechanism not chosen.
+- **Recommendation**: **`@fontsource/inter`** as a dev dep, imported
+  into `main.ts`. Self-hosted via Vite's asset pipeline (no external
+  request blocking first paint), versioned with `package-lock.json`.
+- **Tradeoffs**:
+  - *@fontsource*: locked version, no third-party request, slightly
+    bigger bundle (~80 KB for the weights we use). Best for
+    consistency + privacy (no Google Fonts CDN tracking).
+  - *Google Fonts CDN*: smaller bundle, browsers may have it cached
+    from another site. Adds an external request on first paint.
+  - *Self-hosted from `assets/fonts/`*: full control, zero deps,
+    requires manually subsetting + format choices.
+- **Trigger to decide**: before first deploy. The dev experience
+  works fine with system fonts until then.
+
+### OpenCV.js version pinning
+
+- **Status**: open. Worker calls `importScripts('https://docs.opencv.org/4.x/opencv.js')`
+  — the `4.x` URL points to whatever the latest 4.x build is.
+- **Recommendation**: pin to a specific build (e.g.
+  `https://docs.opencv.org/4.10.0/opencv.js`) once we've verified
+  the editor still passes the 30 functional specs against it. The
+  current `4.x` tag is convenient for development but a CDN update
+  could silently break us on a Saturday night.
+- **Trigger to decide**: before first deploy. Or sooner if the test
+  suite ever flakes on auto-crop without a code change.
+
+### Stripe-checkout polling vs. redirect
+
+- **Status**: open. CLAUDE.md describes both patterns; we haven't
+  picked one for `CheckoutView`.
+- **Recommendation**: **redirect to `/confirmation/{uuid}` with a
+  small poll on that view**. The polling code only lives on one
+  page; CheckoutView stays simple and dumb. Confirmation polls
+  `GET /api/v1/orders/{uuid}/` for ~5–15 seconds until status flips
+  to `paid`, then renders the success state. If the webhook hasn't
+  fired by then, surface a "we're confirming your payment, refresh
+  in a minute" state — never block the customer.
+- **Tradeoffs**:
+  - *Redirect + poll on confirmation*: clean separation. Survives
+    Stripe redirects (3DS, iDEAL, Bizum). Customer leaves checkout.
+  - *Stay on checkout + poll there*: customer never leaves the
+    payment screen. But Stripe's redirect-based payment methods
+    break this entirely.
+- **Trigger to decide**: when real Stripe keys land and we can test
+  the actual confirm-payment path end-to-end.
+
+---
+
 ## 🔗 Reference: backend codebase
 
 `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
