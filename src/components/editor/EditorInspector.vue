@@ -6,6 +6,8 @@ import { MATERIAL_TEXTURE_URLS } from '@/utils/materialColors'
 interface Props {
   /** Show/hide the mask layer. v-model:mask-visible. */
   maskVisible: boolean
+  /** Clip the artwork to the cut polygon (background becomes transparent). */
+  removeBackground: boolean
   /** Auto-crop tunables. v-model:options. */
   options: AutoCropOptions
   /** Currently selected material — drives halo color + persists to draft. */
@@ -22,6 +24,7 @@ defineProps<Props>()
 
 defineEmits<{
   'update:maskVisible': [value: boolean]
+  'update:removeBackground': [value: boolean]
   'update:options': [value: AutoCropOptions]
   'update:material': [value: Material | '']
   'update:shape': [value: Shape]
@@ -251,6 +254,25 @@ const SWATCH_CLASSES: Record<Material, string> = {
         class="size-4 accent-primary"
         data-testid="toggle-mask-visible"
         @change="$emit('update:maskVisible', ($event.target as HTMLInputElement).checked)"
+      >
+    </label>
+
+    <!-- Background-removal toggle: clips the base image to the cut polygon
+         so the customer sees the artwork on the canvas's checker pattern,
+         not the original (likely white) photo background. -->
+    <label class="flex items-center justify-between gap-3 cursor-pointer">
+      <span class="text-sm text-text">
+        Quitar fondo
+        <span class="block text-xs text-text-muted">
+          Solo el sticker, sin el fondo de la imagen.
+        </span>
+      </span>
+      <input
+        type="checkbox"
+        :checked="removeBackground"
+        class="size-4 accent-primary"
+        data-testid="toggle-remove-bg"
+        @change="$emit('update:removeBackground', ($event.target as HTMLInputElement).checked)"
       >
     </label>
 

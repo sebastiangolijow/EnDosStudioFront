@@ -23,6 +23,7 @@ const {
   clearMask,
   setMaskVisible,
   setMaskPalette,
+  setRemoveBackground,
   getMaskAsBlob,
   reset,
 } = useCanvasEditor()
@@ -38,6 +39,7 @@ defineExpose({
   clearMask: () => clearMask(),
   setMaskVisible: (v: boolean) => setMaskVisible(v),
   setMaskPalette: (palette: MaskPalette) => setMaskPalette(palette),
+  setRemoveBackground: (enabled: boolean) => setRemoveBackground(enabled),
   getMaskAsBlob: () => getMaskAsBlob(),
   reset: () => reset(),
   hasImage: () => !!image.value,

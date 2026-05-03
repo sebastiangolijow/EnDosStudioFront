@@ -56,6 +56,10 @@ export function useCanvasEditor() {
   /** Halo + stroke colors. Defaults to brand orange; the editor swaps in a
    *  material-tinted palette when the customer picks one in the inspector. */
   const maskPalette = ref<MaskPalette>(DEFAULT_PALETTE)
+  /** When true AND we have a mask polygon, the base layer is clipped to the
+   *  polygon — pixels outside become transparent so the canvas's checker
+   *  background shows through (== "white background removed" effect). */
+  const removeBackground = ref(false)
 
   // === Internals (not reactive) ===
   let resizeObserver: ResizeObserver | null = null
@@ -134,7 +138,29 @@ export function useCanvasEditor() {
     const rect = canvas.getBoundingClientRect()
     ctx.clearRect(0, 0, rect.width, rect.height)
     if (!fit) return
+
+    // Background-removal mode: clip drawing to the mask polygon so pixels
+    // outside the artwork's silhouette become transparent. The customer
+    // sees the checker pattern (CanvasStage's CSS bg) instead of the
+    // original light background, matching the reference shop's UX. We
+    // only clip when there's a real polygon — without one, the customer
+    // would see nothing at all.
+    const shouldClip =
+      removeBackground.value && maskPoints.value && maskPoints.value.length > 0
+    if (shouldClip) {
+      ctx.save()
+      ctx.beginPath()
+      for (let i = 0; i < maskPoints.value!.length; i++) {
+        const css = imageToCss(maskPoints.value![i])
+        if (!css) continue
+        if (i === 0) ctx.moveTo(css.x, css.y)
+        else ctx.lineTo(css.x, css.y)
+      }
+      ctx.closePath()
+      ctx.clip()
+    }
     ctx.drawImage(image.value.source, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
+    if (shouldClip) ctx.restore()
   }
 
   function drawMaskLayer() {
@@ -299,11 +325,15 @@ export function useCanvasEditor() {
   function setMask(points: ImagePoint[]): void {
     maskPoints.value = points
     drawMaskLayer()
+    // Background-removal clips the base layer to the polygon, so a new
+    // polygon means we need to repaint the base too.
+    if (removeBackground.value) drawBaseLayer()
   }
 
   function clearMask(): void {
     maskPoints.value = null
     drawMaskLayer()
+    if (removeBackground.value) drawBaseLayer()
   }
 
   function setMaskVisible(visible: boolean): void {
@@ -314,6 +344,12 @@ export function useCanvasEditor() {
   function setMaskPalette(palette: MaskPalette): void {
     maskPalette.value = palette
     drawMaskLayer()
+  }
+
+  function setRemoveBackground(enabled: boolean): void {
+    removeBackground.value = enabled
+    // The base layer is the only thing that changes; redraw it.
+    drawBaseLayer()
   }
 
   /**
@@ -403,6 +439,7 @@ export function useCanvasEditor() {
     clearMask,
     setMaskVisible,
     setMaskPalette,
+    setRemoveBackground,
     getMaskAsBlob,
     reset,
   }

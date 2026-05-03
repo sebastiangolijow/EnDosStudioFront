@@ -42,6 +42,11 @@ const cropOptions = ref<AutoCropOptions>({
   marginMm: 15, // default bleed margin (typical sticker-print convention)
 })
 const maskVisible = ref<boolean>(true)
+// Show the artwork against the canvas's checker background instead of its
+// original (likely white) background. Matches the reference shop's UX —
+// once a cut polygon exists, the customer sees what the printed sticker
+// will actually look like (no rectangular page bg around it).
+const removeBackground = ref<boolean>(true)
 
 // Material + relief + shape state lives in the editor view (not the canvas
 // composable) because they're draft-Order properties, not canvas concerns.
@@ -284,6 +289,7 @@ watch(cropOptions, () => {
 }, { deep: true })
 
 watch(maskVisible, (v) => canvasRef.value?.setMaskVisible(v))
+watch(removeBackground, (v) => canvasRef.value?.setRemoveBackground(v))
 
 // === Material + relief: persist to draft, repaint halo ===
 
@@ -436,6 +442,10 @@ async function bootstrapEditor() {
     // Push the initial palette into the canvas so a returning customer with
     // a material already chosen sees the right halo color on Auto cut.
     canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
+    // Push the bg-removal default so the base layer respects it from the
+    // very first paint (otherwise a customer with a pre-existing mask
+    // would briefly see the original background before the watcher fires).
+    canvasRef.value?.setRemoveBackground(removeBackground.value)
 
     const localUrl = await fetchAsObjectUrl(original)
     await loadImageIntoEditor(localUrl)
@@ -569,12 +579,14 @@ onMounted(bootstrapEditor)
       <!-- Right: inspector -->
       <EditorInspector
         :mask-visible="maskVisible"
+        :remove-background="removeBackground"
         :options="cropOptions"
         :material="material"
         :shape="shape"
         :with-relief="withRelief"
         :relief-note="reliefNote"
         @update:mask-visible="maskVisible = $event"
+        @update:remove-background="removeBackground = $event"
         @update:options="cropOptions = $event"
         @update:material="material = $event"
         @update:shape="shape = $event"
