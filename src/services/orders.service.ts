@@ -7,6 +7,7 @@ import type {
   OrderUpdatePayload,
   PriceQuoteRequest,
   PriceQuoteResponse,
+  SmartCutResponse,
 } from '@/types/order'
 
 export const ordersService = {
@@ -96,6 +97,19 @@ export const ordersService = {
   /** Staff-only. in_production → shipped. */
   async ship(uuid: string): Promise<Order> {
     const response = await api.post(`/orders/${uuid}/ship/`)
+    return response.data
+  },
+
+  // === AI background removal ===
+
+  /**
+   * Run "Recorte inteligente" — sync server-side rembg on the order's
+   * `original` file. Returns a polygon in image-natural pixels.
+   * Customer-blocking: ~3-5 s round-trip including the model inference.
+   * The server allows it on any order status (read-only operation).
+   */
+  async smartCut(uuid: string): Promise<SmartCutResponse> {
+    const response = await api.post(`/orders/${uuid}/smart-cut/`)
     return response.data
   },
 

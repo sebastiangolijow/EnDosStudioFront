@@ -21,6 +21,7 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { type ImagePoint } from './useAutoCrop'
 import { DEFAULT_PALETTE, type MaskPalette, onTextureReady } from '@/utils/materialColors'
+import { smoothPolygonPerimeter } from '@/utils/polygon'
 
 export interface ImageState {
   source: HTMLImageElement
@@ -77,54 +78,6 @@ function traceSmoothClosedCurve(
   }
 }
 
-/**
- * Smooth a closed polygon's vertex coordinates by perimeter-blurring.
- *
- * For each vertex p[i], replace it with a weighted average of itself and
- * its 2k neighbors (k on each side), with binomial weights centered on i.
- * Equivalent to convolving the polygon coordinates with a 1D Gaussian
- * along the perimeter. Each pass widens the effective kernel; passes
- * are cheap (O(n·k)) and the visual effect is uniform — small bumps and
- * wide concavities both smooth at proportional rates.
- *
- * Why this and not Chaikin's corner-cutting:
- *   - Chaikin only rounds at vertices; long edges between sparse vertices
- *     stay straight regardless of how many iterations you run.
- *   - Perimeter-blur smooths everywhere along the curve, including across
- *     concavities. This is what gives the "wavy at max slider" look the
- *     customer asked for: bumps level out, the silhouette becomes a
- *     smooth undulation.
- *
- * Implementation: rather than a true Gaussian, do `iterations` passes of
- * a 3-tap [1, 2, 1] / 4 kernel. Multiple passes converge to a Gaussian;
- * 6 passes ≈ Gaussian with σ ≈ 1.7 vertex-spacings, which is plenty.
- * (Slider 10 → 6 passes covers the full visual range.)
- */
-function smoothPolygonPerimeter<T extends { x: number; y: number }>(
-  points: T[],
-  iterations: number,
-): { x: number; y: number }[] {
-  if (iterations <= 0 || points.length < 3) {
-    return points.map((p) => ({ x: p.x, y: p.y }))
-  }
-  let pts: { x: number; y: number }[] = points.map((p) => ({ x: p.x, y: p.y }))
-  const n = pts.length
-  for (let iter = 0; iter < iterations; iter++) {
-    const out: { x: number; y: number }[] = new Array(n)
-    for (let i = 0; i < n; i++) {
-      const prev = pts[(i - 1 + n) % n]
-      const cur = pts[i]
-      const next = pts[(i + 1) % n]
-      out[i] = {
-        x: (prev.x + 2 * cur.x + next.x) / 4,
-        y: (prev.y + 2 * cur.y + next.y) / 4,
-      }
-    }
-    pts = out
-  }
-  return pts
-}
-
 /** Map UI slider value (0–10) to smoothing-pass count (0–25).
  *  Slider 0 = raw silhouette (no extra smoothing on top of the always-on
  *  quadratic-curve render). Slider 10 = 25 passes of perimeter-blur,
@@ -163,12 +116,14 @@ export function useCanvasEditor() {
    *  checker pattern shows through the artwork too — used for the
    *  "vinilo transparente" material. */
   const transparentMaterial = ref(false)
-  /** When true, the customer has chosen a material with a colored halo;
-   *  the base image is drawn at slightly reduced opacity (~88%) so the
-   *  halo bleeds through it subtly — matches the reference shop where
-   *  holographic is vivid in the margin and barely visible over the
-   *  artwork itself. */
+  /** When true, the customer has chosen a material with a colored halo.
+   *  Drives the halo-rendering branch in drawMaskLayer; no longer
+   *  affects base-image opacity (see drawBaseLayer). */
   const materialActive = ref(false)
+  /** True when the chosen material is holographic (`holografico` or
+   *  `holografico_transparente`). Drives the iridescent overlay drawn
+   *  on top of the artwork in drawBaseLayer. */
+  const isHolographicMaterial = ref(false)
   /** UI smoothing slider value (2–10). Drives perimeter-Gaussian passes
    *  applied to the polygon before rendering. The minimum is 2 — below
    *  that, per-vertex normal-offset self-intersections (from sharp
@@ -248,6 +203,51 @@ export function useCanvasEditor() {
 
   // === Per-layer drawing ===
 
+  /**
+   * Paint an iridescent diagonal-band overlay on top of the already-
+   * drawn artwork. Caller is responsible for `ctx.save()` + `clip()`
+   * before invoking and `restore()` after — we paint into the active
+   * clip region so the overlay only touches artwork pixels.
+   *
+   * Implementation: diagonal multi-stop linear gradient + `screen`
+   * blend mode + ~28% alpha. The screen op brightens highlights and
+   * tints them (cyan / purple / pink / gold / green stops match the
+   * reference shop's holographic vinyl) without darkening shadows.
+   *
+   * The gradient diagonal runs from the image's top-left to its
+   * bottom-right, so the bands track the actual sticker rather than
+   * the canvas viewport — moving the camera doesn't shift the
+   * highlights.
+   */
+  function drawHolographicOverlay(
+    ctx: CanvasRenderingContext2D,
+    fitT: FitTransform,
+  ): void {
+    const x0 = fitT.offsetX
+    const y0 = fitT.offsetY
+    const x1 = fitT.offsetX + fitT.drawW
+    const y1 = fitT.offsetY + fitT.drawH
+
+    const grad = ctx.createLinearGradient(x0, y0, x1, y1)
+    // Five-stop iridescent — cyan → purple → pink → gold → light green.
+    // Same color palette the bundled holographic.png texture uses, so
+    // the artwork shimmer reads as the same material as the bleed halo.
+    grad.addColorStop(0.0, 'rgba(34, 211, 238, 1)')   // cyan
+    grad.addColorStop(0.28, 'rgba(168, 85, 247, 1)')  // violet
+    grad.addColorStop(0.5, 'rgba(244, 114, 182, 1)')  // pink
+    grad.addColorStop(0.72, 'rgba(250, 204, 21, 1)')  // gold
+    grad.addColorStop(1.0, 'rgba(163, 230, 53, 1)')   // lime
+
+    const priorAlpha = ctx.globalAlpha
+    const priorOp = ctx.globalCompositeOperation
+    ctx.globalAlpha = priorAlpha * 0.28
+    ctx.globalCompositeOperation = 'screen'
+    ctx.fillStyle = grad
+    ctx.fillRect(x0, y0, fitT.drawW, fitT.drawH)
+    ctx.globalCompositeOperation = priorOp
+    ctx.globalAlpha = priorAlpha
+  }
+
   function drawBaseLayer() {
     const canvas = baseCanvas.value
     if (!canvas || !image.value) return
@@ -293,24 +293,37 @@ export function useCanvasEditor() {
       traceSmoothClosedCurve(ctx, cssClip)
       ctx.clip()
     }
-    // Two opacity tweaks on the base image:
-    //  - "vinilo transparente" → drop hard so the checker reads through
-    //    (the customer reads it as "transparent vinyl, surface behind
-    //    shows through").
-    //  - With a material set AND "Quitar fondo" on (so the clip is the
-    //    tight artwork polygon, not the cut polygon) → drop subtly to
-    //    ~85% so the holographic / metallic halo BLEEDS through the
-    //    artwork a little. Reference shop: halo vivid in the bleed
-    //    margin, barely visible over the artwork itself. We get the
-    //    "barely" by letting the underlying mask layer peek through.
+    // Base-image opacity. ONLY "vinilo transparente" gets a hard alpha
+    // drop, so the canvas's checker pattern shows through and the
+    // customer reads it as "transparent vinyl, surface behind shows
+    // through". For all other materials the artwork renders at full
+    // opacity — the holographic / metallic look comes from a separate
+    // overlay layer drawn after the artwork (see drawHolographicOverlay
+    // below), NOT from washing out the artwork's own colors. Previously
+    // we dropped to 88% to let the halo bleed through, which muted the
+    // base colors uniformly and didn't match the reference shop's
+    // "iridescent reflections on top of vivid artwork" look.
     const priorAlpha = ctx.globalAlpha
     if (transparentMaterial.value) {
       ctx.globalAlpha = priorAlpha * 0.55
-    } else if (materialActive.value && removeBackground.value && shouldClip) {
-      ctx.globalAlpha = priorAlpha * 0.88
     }
     ctx.drawImage(image.value.source, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
     ctx.globalAlpha = priorAlpha
+
+    // Holographic overlay: diagonal iridescent bands on top of the
+    // artwork. Painted while we're still inside the clip path (so it
+    // hugs the artwork, not the bleed margin). Skipped for non-
+    // holographic materials and for transparent vinyl (where the
+    // checker pattern is already the dominant visual).
+    if (
+      shouldClip &&
+      !transparentMaterial.value &&
+      isHolographicMaterial.value &&
+      fit
+    ) {
+      drawHolographicOverlay(ctx, fit)
+    }
+
     if (shouldClip) ctx.restore()
   }
 
@@ -531,6 +544,11 @@ export function useCanvasEditor() {
     drawBaseLayer()
   }
 
+  function setHolographicMaterial(holographic: boolean): void {
+    isHolographicMaterial.value = holographic
+    drawBaseLayer()
+  }
+
   /** Set the UI smoothing slider value (0–10). Re-renders the mask layer
    *  and (if removeBackground is on) the base layer's clip mask. Does NOT
    *  re-run OpenCV — the polygon stays the same; only the geometric
@@ -640,6 +658,7 @@ export function useCanvasEditor() {
     setRemoveBackground,
     setTransparentMaterial,
     setMaterialActive,
+    setHolographicMaterial,
     setSmoothingSlider,
     getMaskAsBlob,
     reset,

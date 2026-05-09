@@ -8,9 +8,14 @@ import EditorToolbar from '@/components/editor/EditorToolbar.vue'
 import EditorInspector from '@/components/editor/EditorInspector.vue'
 import { ordersService } from '@/services/orders.service'
 import { filesService } from '@/services/files.service'
-import { type AutoCropOptions, useAutoCropWorker } from '@/composables/useAutoCropWorker'
+import {
+  type AutoCropOptions,
+  type ImagePoint,
+  useAutoCropWorker,
+} from '@/composables/useAutoCropWorker'
 import { useToast } from '@/composables/useToast'
 import { getMaskPalette } from '@/utils/materialColors'
+import { offsetPolygonOutward, smoothPolygonPerimeter } from '@/utils/polygon'
 import { type Material, type Order, type OrderFile, type Shape } from '@/types/order'
 
 const route = useRoute()
@@ -161,7 +166,23 @@ function applyGeometricMaskIfNeeded() {
     marginPxForGeometric(),
   )
   if (pts) {
+    // If we were in smart-cut mode, the canvas base layer is the cleaned
+    // RGBA — but geometric shapes ignore artwork silhouette and want the
+    // original unaltered image so the customer sees the full photo
+    // inside the square/circle/etc. Restore before applying.
+    if (cutMode.value === 'smart') {
+      // Fire-and-forget: restoreOriginalBaseImage is async (Image decode)
+      // but the geometric mask doesn't depend on the new pixels being
+      // ready, so we don't await — it'll repaint once the swap completes.
+      void restoreOriginalBaseImage()
+    }
     canvasRef.value.setMask(pts)
+    // Geometric shapes don't have a "cut mode" — neither classical
+    // OpenCV nor smart-cut produced this polygon; it's a primitive.
+    // Clear smart-cut state so a future shape switch back to
+    // contorneado doesn't accidentally re-offset stale data.
+    cutMode.value = null
+    smartCutTightPoints.value = null
   }
   // contorneado: leave any existing auto-cut mask alone.
 }
@@ -223,6 +244,175 @@ const pxPerMm = computed<number | null>(() => {
   return longEdge / DEFAULT_LONG_EDGE_MM
 })
 
+// Smart-cut state. Independent of OpenCV.js — the work runs server-side
+// (rembg AI background removal). Customer-blocking: ~3-5 s round-trip
+// including model inference. We surface progress via the same banner
+// the classical auto-cut uses (`editor-processing`).
+const isSmartCutting = ref<boolean>(false)
+
+// Which cut pipeline produced the current polygon. Drives:
+//   - whether the margin slider re-runs OpenCV (auto) or just re-offsets
+//     the saved tight polygon (smart);
+//   - whether Auto cut is disabled (smart locks it out — clicking it would
+//     overwrite the AI result with the classical one, which is rarely
+//     what the customer wants).
+// `null` = no cut applied yet.
+const cutMode = ref<'auto' | 'smart' | null>(null)
+
+// Tight artwork polygon from the last smart-cut, in image-natural pixels.
+// Saved so the margin slider can re-offset it locally without another
+// server round-trip. Cleared when classical Auto cut runs (the customer
+// switched modes back) or when shape changes.
+const smartCutTightPoints = ref<ImagePoint[] | null>(null)
+
+// Source URL of the customer's ORIGINAL uploaded image. Saved so that
+// when smart-cut runs (which swaps the canvas base layer to the
+// rembg-cleaned RGBA), we can restore the original on classical Auto
+// cut, shape change, or any "exit smart-cut mode" path. The cleaned
+// image and the original have identical pixel dimensions, so all
+// coordinate math (pxPerMm, fit transform, polygon offsets) keeps
+// working unchanged across the swap.
+const originalImageSrc = ref<string | null>(null)
+
+const hasOriginalFile = computed<boolean>(
+  () => order.value?.files.some((f) => f.kind === 'original') ?? false,
+)
+
+async function onSmartCut() {
+  if (!order.value || !canvasRef.value) return
+
+  noContourMessage.value = null
+  isSmartCutting.value = true
+  try {
+    const result = await ordersService.smartCut(order.value.uuid)
+    if (result.kind === 'no-contour-found') {
+      noContourMessage.value =
+        'No pudimos detectar el contorno automáticamente. Probá con otra imagen o usá Auto cut.'
+      canvasRef.value.clearMask()
+      cutMode.value = null
+      smartCutTightPoints.value = null
+      return
+    }
+    // Swap the canvas base layer to the rembg-CLEANED RGBA. Same pixel
+    // dimensions as the original so all coordinate math keeps working,
+    // but pixels outside the silhouette are now alpha=0 → margin
+    // expansion shows transparent ring (or material halo) in the
+    // bleed area instead of truncated source-image artwork.
+    if (result.cleaned_image_data_url) {
+      // Decode the data URL into a fresh HTMLImageElement so the
+      // OpenCV side-copy (loadedImage) — which we keep in case the
+      // customer flips back to classical Auto cut — also gets the
+      // cleaned pixels.
+      await canvasRef.value.loadImage(result.cleaned_image_data_url)
+      const img = new Image()
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error('cleaned-image decode failed'))
+        img.src = result.cleaned_image_data_url!
+      })
+      loadedImage.value = img
+    }
+    // Smart cut returns the tight artwork outline only. Save it so the
+    // margin slider can re-offset locally (no server round-trip) and
+    // inflate it by the current marginMm now to produce the cut polygon.
+    smartCutTightPoints.value = result.points
+    cutMode.value = 'smart'
+    applySmartCutWithMargin()
+  } catch (e) {
+    const status = (e as { response?: { status?: number } }).response?.status
+    if (status === 503) {
+      toast.error('El recorte inteligente no está disponible. Intentá Auto cut.')
+    } else if (status === 400) {
+      toast.error('Subí tu diseño antes de usar Recorte inteligente.')
+    } else {
+      toast.error('Falló el recorte inteligente. Probá de nuevo.')
+    }
+  } finally {
+    isSmartCutting.value = false
+  }
+}
+
+/**
+ * Swap the canvas base layer back to the customer's ORIGINAL uploaded
+ * image. Called when leaving smart-cut mode (classical Auto cut, shape
+ * change away from contorneado) — the cleaned RGBA was a temporary
+ * preview and shouldn't persist into other modes.
+ */
+async function restoreOriginalBaseImage() {
+  const src = originalImageSrc.value
+  if (!src || !canvasRef.value) return
+  await canvasRef.value.loadImage(src)
+  // Re-decode for the OpenCV side-copy too (cheap; bytes are cached).
+  const img = new Image()
+  if (!src.startsWith('blob:') && !src.startsWith('data:')) {
+    img.crossOrigin = 'anonymous'
+  }
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve()
+    img.onerror = () => reject(new Error('original re-decode failed'))
+    img.src = src
+  })
+  loadedImage.value = img
+}
+
+/**
+ * Pre-smoothing strategy for the smart-cut polygon BEFORE offsetting.
+ *
+ * `offsetPolygonOutward` moves each vertex along its local outward
+ * normal. On a polygon with sharp concavities (radial-burst designs,
+ * fur tufts, "ear"-like spikes), neighboring offset points cross at
+ * large margin values, producing visible self-intersections /
+ * fragmentation. The fix is to first collapse those concavities with
+ * a perimeter-Gaussian smoother. The number of passes scales with
+ * offset distance — bigger margin → more aggressive smoothing.
+ *
+ * Independent of the user-facing "Suavidad" slider (render-only).
+ */
+function presmoothPassesForMargin(distancePx: number): number {
+  // 1 pass per 8 px of offset, minimum 5 (so a 0 mm cut still has the
+  // tiny rembg per-pixel jaggies removed), maximum 50. Tested on the
+  // gorilla (~800 verts) at the slider's max (30 mm) — produces a
+  // clean simple curve with no self-intersections.
+  return Math.max(5, Math.min(50, Math.round(distancePx / 8)))
+}
+
+/**
+ * Re-offset the saved smart-cut tight polygon by the current marginMm
+ * and push the result to the canvas. Called on initial smart-cut and
+ * on every margin-slider change while cutMode === 'smart'.
+ *
+ * Pipeline: tight rembg silhouette → margin-aware perimeter-Gaussian
+ * pre-smooth → offset outward by marginMm → canvas. The pre-smooth
+ * scales with offset distance so big margins get heavy smoothing
+ * (preventing self-intersections) while small margins keep more detail.
+ */
+function applySmartCutWithMargin() {
+  const tight = smartCutTightPoints.value
+  if (!tight || tight.length < 3 || !canvasRef.value) return
+
+  const marginMm = cropOptions.value.marginMm ?? 0
+  const pm = pxPerMm.value
+  const distancePx = pm != null && marginMm > 0 ? marginMm * pm : 0
+
+  // Stabilize. Wrap the smoother's plain {x,y} output back into ImagePoint.
+  const passes = presmoothPassesForMargin(distancePx)
+  const stabilized = smoothPolygonPerimeter(tight, passes)
+  const stabilizedTight: ImagePoint[] = stabilized.map((p) => ({
+    kind: 'image',
+    x: p.x,
+    y: p.y,
+  }))
+
+  const inflated =
+    distancePx > 0
+      ? offsetPolygonOutward(stabilizedTight, distancePx)
+      : stabilizedTight
+
+  // `stabilizedTight` is the artwork-clip polygon, `inflated` is the
+  // cut polygon. When marginMm is 0 they're identical.
+  canvasRef.value.setMask(inflated, stabilizedTight)
+}
+
 async function onAutoCut() {
   if (!order.value || !canvasRef.value?.hasImage()) return
 
@@ -235,6 +425,14 @@ async function onAutoCut() {
   if (!loadedImage.value) {
     toast.error('La imagen aún no está lista. Esperá un instante.')
     return
+  }
+
+  // If we were in smart-cut mode, the canvas base layer is the cleaned
+  // RGBA. Classical OpenCV detection runs against the ORIGINAL pixels
+  // (the customer wants to detect from the unaltered photo, not from
+  // rembg's already-cleaned silhouette). Restore the original first.
+  if (cutMode.value === 'smart') {
+    await restoreOriginalBaseImage()
   }
 
   noContourMessage.value = null
@@ -252,6 +450,11 @@ async function onAutoCut() {
     // clip mask when removeBackground is on. Lets the halo show in the
     // bleed margin without the photo's background hiding it.
     canvasRef.value.setMask(result.points, result.artworkPoints ?? null)
+    // Classical auto-cut overrides any prior smart-cut state. Forget the
+    // saved smart-cut tight polygon so a future margin change uses the
+    // OpenCV pipeline, not a local re-offset of stale data.
+    cutMode.value = 'auto'
+    smartCutTightPoints.value = null
   } catch {
     toast.error('Falló la detección de contorno. Probá de nuevo.')
   }
@@ -263,6 +466,12 @@ const loadedImage = ref<HTMLImageElement | null>(null)
 
 // Wrap the canvas's loadImage so we can keep a side-copy of the HTMLImageElement.
 async function loadImageIntoEditor(src: string) {
+  // Remember the very first src as the "original". Subsequent calls
+  // (e.g. swapping in the cleaned RGBA after smart-cut) don't override
+  // this — only the initial bootstrap does, plus an explicit reset.
+  if (originalImageSrc.value === null) {
+    originalImageSrc.value = src
+  }
   await canvasRef.value?.loadImage(src)
   // Decode again into a separate Image() — cheap because the bytes are cached
   // by the browser. This gives us the natural-resolution source for OpenCV.
@@ -293,9 +502,16 @@ watch(cropOptions, () => {
     applyGeometricMaskIfNeeded()
     return
   }
-  // contorneado: re-run auto-cut, but only when we already have a mask
-  // (otherwise the customer hasn't asked for it yet).
+  // contorneado branches by which pipeline produced the current polygon.
   if (!canvasRef.value?.hasMask()) return
+  if (cutMode.value === 'smart') {
+    // Smart cut: re-offset the saved tight polygon locally. Instant, no
+    // server round-trip, no OpenCV. The bleed margin grows with the
+    // source image's original pixels visible in the new ring.
+    applySmartCutWithMargin()
+    return
+  }
+  // Classical auto-cut: debounce + re-run OpenCV with the new options.
   if (optionsTimer) clearTimeout(optionsTimer)
   optionsTimer = setTimeout(onAutoCut, 300)
 }, { deep: true })
@@ -314,11 +530,18 @@ watch(smoothingSlider, (v) => canvasRef.value?.setSmoothingSlider(v))
 watch(material, (m) => {
   canvasRef.value?.setMaskPalette(getMaskPalette(m))
   canvasRef.value?.setTransparentMaterial(m === 'vinilo_transparente')
-  // Material active means a colored halo exists — drop the artwork's
-  // alpha slightly so the halo peeks through. "vinilo_transparente"
-  // gets its own dedicated treatment via setTransparentMaterial above
-  // and shouldn't double-dip on the alpha drop.
+  // Material active = a colored halo exists. Used to gate halo-dependent
+  // tweaks in drawBaseLayer / drawMaskLayer. "vinilo_transparente" gets
+  // its own dedicated treatment via setTransparentMaterial above.
   canvasRef.value?.setMaterialActive(m !== '' && m !== 'vinilo_transparente')
+  // Holographic = iridescent diagonal-band overlay on top of the
+  // artwork (preserves base colors, adds shimmer). Both holographic
+  // SKUs trigger it; eggshell_holografico keeps the eggshell texture
+  // and skips the overlay (the eggshell finish is matte enough that
+  // a strong shimmer would look fake).
+  canvasRef.value?.setHolographicMaterial(
+    m === 'holografico' || m === 'holografico_transparente',
+  )
 })
 
 // Debounced persistence. The customer can flip checkboxes / toggle materials
@@ -468,6 +691,10 @@ async function bootstrapEditor() {
     canvasRef.value?.setMaterialActive(
       material.value !== '' && material.value !== 'vinilo_transparente',
     )
+    canvasRef.value?.setHolographicMaterial(
+      material.value === 'holografico' ||
+        material.value === 'holografico_transparente',
+    )
     // Push the bg-removal default so the base layer respects it from the
     // very first paint (otherwise a customer with a pre-existing mask
     // would briefly see the original background before the watcher fires).
@@ -548,20 +775,26 @@ onMounted(bootstrapEditor)
         :is-processing="isProcessing"
         :is-open-cv-ready="openCvReady"
         :shape="shape"
+        :is-smart-cutting="isSmartCutting"
+        :has-original="hasOriginalFile"
+        :is-smart-cut-active="cutMode === 'smart'"
         @auto-cut="onAutoCut"
+        @smart-cut="onSmartCut"
       />
 
       <!-- Center: canvas + status banner -->
       <div class="flex flex-col gap-3">
         <CanvasStage ref="canvasRef" />
 
-        <!-- Auto-crop status banner -->
+        <!-- Auto-crop / smart-cut status banner -->
         <div
-          v-if="isProcessing"
+          v-if="isProcessing || isSmartCutting"
           class="rounded-md border border-warning/40 bg-warning/10 p-3 text-center text-sm text-warning"
           data-testid="editor-processing"
         >
-          {{ progressMessage || 'Detectando el contorno…' }}
+          {{ isSmartCutting
+            ? 'Aplicando recorte inteligente…'
+            : (progressMessage || 'Detectando el contorno…') }}
         </div>
         <div
           v-else-if="noContourMessage"

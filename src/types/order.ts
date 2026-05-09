@@ -201,3 +201,38 @@ export interface CheckoutResponse {
   amount_cents: number
   currency: string
 }
+
+/**
+ * Smart-cut (AI background removal) response.
+ *
+ * Returned by POST /api/v1/orders/{uuid}/smart-cut/. Polygon points are
+ * in image-natural pixels (same coordinate system as `setMask` expects).
+ * `artwork_points` is identical to `points` in the current backend
+ * version (no server-side bleed offset); the field is reserved for M3b
+ * when bleed-margin offsetting may move to the backend.
+ *
+ * Snake_case on the wire matches the rest of the file (e.g.
+ * `total_amount_cents`, `artwork_points`). Consumers read
+ * `result.artwork_points` directly — no camel conversion in the
+ * service layer.
+ */
+export interface SmartCutPoint {
+  kind: 'image'
+  x: number
+  y: number
+}
+export interface SmartCutResponse {
+  kind: 'ok' | 'no-contour-found'
+  points: SmartCutPoint[]
+  artwork_points: SmartCutPoint[]
+  area_px: number
+  /**
+   * The rembg-cleaned RGBA image as a base64 PNG data URL. Same pixel
+   * dimensions as the source `original`. The frontend swaps it in as the
+   * canvas's base layer when smart-cut is active so margin expansion
+   * shows transparent ring (or material halo) in the bleed area instead
+   * of truncated bits of the source PNG. `null` on no-contour-found.
+   * Typical size: 50-200 KB inline.
+   */
+  cleaned_image_data_url: string | null
+}

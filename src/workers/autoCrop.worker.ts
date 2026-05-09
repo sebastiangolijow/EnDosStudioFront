@@ -553,11 +553,19 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
           // alphaMask.data is a typed-array view we can fill.
           const dst = (alphaMask as unknown as { data: Uint8Array }).data
           const srcArr = imageData.data
+          // Threshold at 16 (≈6% alpha) — anything more than barely-visible
+          // counts as artwork. The previous 128 cutoff was too aggressive
+          // for illustrations with anti-aliased edges and semi-translucent
+          // fur/highlights: most of the gorilla's body dropped out of the
+          // mask, leaving only the fully-opaque sunglasses + face core.
+          // Speckle from genuinely noisy alpha is rare on artwork PNGs;
+          // the min-area filter on the contour pass below catches it.
           for (let i = 0; i < totalPixels; i++) {
-            dst[i] = srcArr[i * 4 + 3] >= 128 ? 255 : 0
+            dst[i] = srcArr[i * 4 + 3] >= 16 ? 255 : 0
           }
-          // A single MORPH_OPEN cleans up speckle without nuking thin features.
-          cv.morphologyEx(alphaMask, alphaMask, cv.MORPH_OPEN, morphKernelSmall)
+          // No MORPH_OPEN here. Open erodes thin features (whiskers,
+          // antennae, pen strokes) for no benefit on a clean PNG export
+          // — the alpha channel is already binary in spirit.
           if (paintContoursFromMask(alphaMask, MIN_AREA)) strategyUsed = 'alpha'
         } finally {
           alphaMask.delete()
@@ -577,11 +585,16 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       ) {
         // Drop alpha channel — inRange wants 3-channel input.
         cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB)
-        // Wider tolerance than the previous 25 — dark artwork against a
-        // light bg can merge with edge shadow; the extra slack keeps the
-        // silhouette continuous instead of breaking into chunks at the
-        // bottom of e.g. a navy sweater on grey.
-        const tol = 35
+        // Adaptive tolerance based on the perimeter's color spread:
+        // uniform bg → tight tolerance (so artwork colors close to bg
+        // aren't classified as bg); noisy bg → wider tolerance (to
+        // bridge the noise). Clamped to [15, 28] — never so tight we
+        // miss anti-aliased edge pixels, never so wide we eat artwork.
+        // The earlier flat 35 ate the gorilla's blue face/fur on a
+        // teal background because bg±35 covered the artwork's blue
+        // tones; the perimeter flood-fill then reached through those
+        // blue regions and excluded most of the silhouette.
+        const tol = Math.max(15, Math.min(28, Math.round(inspection.bgStdDev * 1.5 + 12)))
         const lo = [
           Math.max(0, inspection.bgR - tol),
           Math.max(0, inspection.bgG - tol),

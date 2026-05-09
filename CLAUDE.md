@@ -3,7 +3,7 @@
 > **Studio**: YeKo Studio · **Client**: Barcelona print shop selling custom stickers
 > **Stack**: Vue 3 · Vite · TypeScript · Vue Router · Pinia · Tailwind CSS · Axios · Canvas API · OpenCV.js (CDN)
 > **Backend**: separate Django + DRF project at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
-> **Status**: feature-complete for the MVP customer flow as of session 2026-05-03 + repricing 2026-05-09 + catalog M3a 2026-05-09. SPA shipped end-to-end (auth, upload, editor with auto-crop + materials + Forma + halo, order-config, checkout stub, catalog browse/buy, admin product CRUD). 50/50 functional Playwright specs passing. Editor matches the reference shop's UX (vivid material halo in bleed margin, transparent vinyl preview, geometric shapes pass through editor, background removal). Stripe live keys + email SMTP + first deploy are the operational blockers, not code.
+> **Status**: feature-complete for the MVP customer flow as of session 2026-05-03 + repricing 2026-05-09 + catalog M3a 2026-05-09 + smart-cut (rembg AI background removal) 2026-05-09 — feature shipped + committed, polishing pass in flight (uncommitted; gorilla margin behavior still buggy on complex artwork — see "Pick up here tomorrow" below). SPA shipped end-to-end (auth, upload, editor with auto-crop + Recorte inteligente + materials + Forma + halo, order-config, checkout stub, catalog browse/buy, admin product CRUD). 50/50 functional Playwright specs passing. Editor matches the reference shop's UX (vivid material halo in bleed margin, transparent vinyl preview, geometric shapes pass through editor, background removal). Stripe live keys + email SMTP + first deploy are the operational blockers, not code.
 
 This file is the index for any AI agent working on the StickerApp frontend. Read it before doing anything. It captures the YeKo Studio mindset, the design tokens (locked), the tech-stack decisions, the screen inventory, and the conventions we'll follow.
 
@@ -465,6 +465,37 @@ The `api-contract-check` skill (separate, installed at `~/.claude/skills/api-con
 
 ## 🚧 Status
 
+### Pick up here tomorrow (open thread from EOD 2026-05-09)
+
+**Smart-cut margin slider still produces visual artifacts at large margins.**
+See the "Polishing work / Known issue" subsection under the smart-cut
+session log below for the diagnosis and three concrete hypotheses to
+try in order of cheapness. Reproduction recipe is documented there.
+
+**Uncommitted work** — all the smart-cut polishing is in the working
+tree but NOT committed (the gorilla repro still shows the bug; don't
+squash these into a "feat" commit until the fix lands). Files modified
+locally:
+
+```
+src/components/editor/CanvasStage.vue
+src/components/editor/EditorToolbar.vue
+src/composables/useCanvasEditor.ts
+src/services/orders.service.ts
+src/types/order.ts
+src/views/EditorView.vue
+src/workers/autoCrop.worker.ts
+src/utils/polygon.ts                     (NEW)
+```
+
+Companion uncommitted backend work (see `endossutdio_backend/CLAUDE.md`
+for details):
+- `apps/orders/services_smart_cut.py` (morph-open + cleaned RGBA URL)
+- `apps/orders/cut_path.py` (extracted `_walk_alpha_contour`)
+- `apps/orders/views.py`, `apps/orders/tests/test_smart_cut.py` (new
+  endpoint + 9 tests)
+- `Dockerfile`, `requirements/base.txt` (rembg + ONNX bake)
+
 ### Done — through 2026-05-03
 
 **Bootstrap + auth + history**:
@@ -514,6 +545,155 @@ Frozen detail of the 2026-05-03 session:
 3. **First deploy**. Hosting choice (Vercel / Netlify / self-hosted),
    domain, TLS. CheckoutView's `return_url` for Stripe redirects needs
    to point at the deployed origin.
+
+### Done (Session 2026-05-09 — smart-cut / Recorte inteligente)
+
+The editor now has TWO cut paths instead of one. The customer picks via
+toolbar buttons:
+
+- **Auto cut** (✂️) — classical OpenCV.js in a Web Worker. Fast (~1 s),
+  in-browser, customer-tunable margin slider, three-strategy detection
+  (alpha → bg-trim w/ perimeter flood → Canny). Default for most images.
+- **Recorte inteligente** (✨) — server-side rembg AI background removal
+  (`isnet-general-use`). Server round-trip ~3-5 s including inference.
+  No customer-tunable params. Much better on photos and busy backgrounds.
+
+Both write to the same `die_cut_mask` slot via `getMaskAsBlob`. The
+toolbar disables both during processing of either; the
+`editor-processing` banner reflects whichever is running.
+
+Important contract details:
+- Smart cut returns the tight artwork outline only (no bleed offset).
+  The bleed-margin slider does NOT inflate the smart-cut polygon today
+  — re-running classical Auto cut is the way to add bleed.
+- Smart cut requires the `original` file to be uploaded; the button is
+  disabled until then. The button is also disabled for non-contorneado
+  shapes.
+- Wire format on `SmartCutResponse`: `{kind, points, artwork_points,
+  area_px}` — snake_case matches the rest of the order API.
+  `artwork_points` mirrors `points` in this version (reserved for M3b
+  if backend offset moves server-side).
+
+`onSmartCut` handler in `EditorView.vue` translates HTTP errors:
+- 503 → "El recorte inteligente no está disponible. Intentá Auto cut."
+- 400 → "Subí tu diseño antes de usar Recorte inteligente."
+- 200 + kind=no-contour-found → banner: "No pudimos detectar el contorno
+  automáticamente. Probá con otra imagen o usá Auto cut."
+
+#### Polishing work later in the same session (uncommitted as of EOD)
+
+Customer feedback after the initial ship:
+1. Need to lock out classical Auto cut while smart-cut is active (overwriting
+   was a foot-gun — clicking ✂️ replaced the AI result with the classical
+   one, rarely what they wanted).
+2. Margin slider should re-inflate the smart-cut polygon LOCALLY (no
+   server round-trip per slider drag).
+3. The bleed margin should look like an extension of the source artwork's
+   feel — for the gorilla on teal, customer wanted teal vinyl extending
+   outward, not random truncated artwork bits from the source PNG.
+
+State added to `EditorView.vue`:
+- `cutMode: 'auto' | 'smart' | null` — drives margin slider behavior
+  (smart → local re-offset; auto → debounced OpenCV re-run).
+- `smartCutTightPoints: ImagePoint[] | null` — the rembg-detected tight
+  silhouette saved so the slider can re-offset locally.
+- `originalImageSrc: string | null` — remembers the customer's original
+  upload so we can restore the canvas base layer after smart-cut swaps
+  in the cleaned RGBA (when classical Auto cut runs OR when shape
+  changes away from `contorneado`).
+
+Helpers added:
+- `applySmartCutWithMargin()` — pipeline: tight rembg silhouette →
+  margin-aware perimeter-Gaussian pre-smooth (passes scale 1 per 8 px,
+  min 5, max 50) → `offsetPolygonOutward` → canvas. The pre-smoothing
+  scales with offset distance to prevent self-intersections at high
+  margins.
+- `restoreOriginalBaseImage()` — fire-and-forget swap back to the
+  original photo when leaving smart-cut mode.
+
+New file: `src/utils/polygon.ts` — main-thread mirror of the worker's
+`offsetPolygonOutward` + `smoothPolygonPerimeter` (moved out of the
+canvas composable so the smart-cut math + the canvas renderer can both
+import it). Keep this file in sync with `src/workers/autoCrop.worker.ts`.
+
+`EditorToolbar` got a new `isSmartCutActive` prop that disables the Auto
+cut button while smart-cut is active. The Smart cut button stays
+enabled — clicking it again re-runs detection.
+
+`EditorView` swaps the canvas base layer to a `cleaned_image_data_url`
+(base64 PNG) returned by the smart-cut endpoint. Same dimensions as the
+original so coordinate math survives, but pixels outside the rembg
+silhouette have alpha=0. When margin expands past the artwork edge, the
+bleed area is genuinely transparent (composites against canvas checker
+or material halo) instead of showing truncated source-image artwork.
+
+#### Known issue carried into tomorrow — DO NOT COMMIT YET
+
+**Margin slider on smart-cut still produces visual breakage at high
+margin values on complex artwork.** Specifically: the gorilla
+illustration at margin 25-30 mm shows the silhouette PLUS long curving
+"tendril" artifacts extending outward from the silhouette.
+
+Diagnosis:
+- The rembg output for that gorilla includes single-pixel-wide bridges
+  between the main body and decorative leaves around it. The contour
+  walker traces the entire connected component, walking IN to the
+  body, OUT along each thin leaf bridge to the leaf tip, BACK along
+  the same bridge. When that boundary is offset outward, each "in-out"
+  trip becomes a long curving outward tendril perpendicular to the
+  bridge direction.
+- Backend countermeasure (uncommitted): morphological opening on the
+  rembg alpha (`PIL.ImageFilter.MinFilter(13)` then `MaxFilter(13)`)
+  before contour tracing, which should drop thin appendages narrower
+  than 13 px. Tested on the 64×64 mock fixture — passes. **Customer
+  report says the bug persists on the real gorilla image.**
+- Frontend countermeasure (also uncommitted): margin-scaled pre-
+  smoothing pass (1 per 8 px) before `offsetPolygonOutward`. Helps
+  on simple silhouettes but doesn't fully resolve the in-out leaf-
+  bridge structure.
+
+Three hypotheses for next session, in cheapness order:
+
+1. **Pick the LARGEST connected component** in `_walk_alpha_contour`
+   instead of the first inside pixel scanning row-major. The morph-
+   open might be partially separating the body from a stray
+   decoration, and the walker is picking up the smaller stray island.
+   Tiny patch in `apps/orders/cut_path.py`.
+
+2. **Bump the morph-open kernel to 21 or 31 px**. Risks eroding
+   wider-but-legitimate fur tufts but might be necessary for this
+   image's leaf-bridge widths. Trivial constant change.
+
+3. **Use a real polygon-offset library** (Clipper2 or similar). The
+   current normal-bisector offset is mathematically incorrect for
+   non-convex polygons — sharp concavities always self-intersect. A
+   proper implementation does inset/offset Boolean-style and produces
+   a clean simple polygon at any distance. Real dependency add but is
+   the only fully-correct fix.
+
+Try (1) first — small, targeted, cheapest diagnostic. If artifacts
+persist, escalate to (3).
+
+#### Reproduction steps for tomorrow
+
+1. Upload `/Users/cevichesmac/Desktop/gorila_logo.png`.
+2. Click ✨ Recorte inteligente.
+3. Expect: clean silhouette around the gorilla head.
+4. Drag "Margen alrededor" slider to 30 mm.
+5. **Bug**: long orange tendrils extend outward from the silhouette.
+6. Expected: smooth simple curve following the silhouette, ~30 mm
+   outward from it.
+
+Files to look at first:
+- `endossutdio_backend/apps/orders/services_smart_cut.py` (kernel size,
+  contour-picking logic)
+- `endossutdio_backend/apps/orders/cut_path.py:_walk_alpha_contour`
+  (consider returning the largest island, not the first)
+- `endosstudio_frontend/src/utils/polygon.ts` (`offsetPolygonOutward`,
+  potential Clipper2 replacement)
+- `endosstudio_frontend/src/views/EditorView.vue:applySmartCutWithMargin`
+  (the orchestration — verify the smoothed polygon actually survives
+  the wrap into ImagePoint[] and the canvas render).
 
 ### Done (Session 2026-05-09 — catalog M3a)
 

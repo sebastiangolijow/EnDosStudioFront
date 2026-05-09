@@ -26,6 +26,7 @@ const {
   setRemoveBackground,
   setTransparentMaterial,
   setMaterialActive,
+  setHolographicMaterial,
   setSmoothingSlider,
   getMaskAsBlob,
   reset,
@@ -46,6 +47,8 @@ defineExpose({
   setRemoveBackground: (enabled: boolean) => setRemoveBackground(enabled),
   setTransparentMaterial: (enabled: boolean) => setTransparentMaterial(enabled),
   setMaterialActive: (active: boolean) => setMaterialActive(active),
+  setHolographicMaterial: (holographic: boolean) =>
+    setHolographicMaterial(holographic),
   setSmoothingSlider: (value: number) => setSmoothingSlider(value),
   getMaskAsBlob: () => getMaskAsBlob(),
   reset: () => reset(),
