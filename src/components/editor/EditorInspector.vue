@@ -310,10 +310,15 @@ const SWATCH_CLASSES: Record<Material, string> = {
       >
     </div>
 
-    <!-- Cut-line smoothing — Chaikin iterations on the rendered polygon.
-         Updates instantly without re-running OpenCV. 0 follows the
-         silhouette tightly (every fur tuft visible); 10 is fully wavy
-         (concavities filled, big smooth bumps). -->
+    <!-- Cut-line smoothing — perimeter-Gaussian passes on the polygon.
+         Updates instantly without re-running OpenCV. Min is intentionally
+         2 (not 0): at fewer passes, sharp concavities in the silhouette
+         (fur tufts on the gorilla, hair tips, etc.) cause the per-vertex
+         normal-offset to self-intersect, producing visible spikes/loops
+         around the cut line. The print shop wouldn't accept a polygon
+         like that anyway, so we floor the slider to keep the customer
+         in usable territory. 2 = barely smoothed (silhouette detail
+         preserved); 10 = fully wavy. -->
     <div>
       <div class="mb-1 flex items-baseline justify-between gap-2">
         <label class="text-sm text-text">Suavidad</label>
@@ -321,7 +326,7 @@ const SWATCH_CLASSES: Record<Material, string> = {
       </div>
       <input
         type="range"
-        min="0"
+        min="2"
         max="10"
         step="1"
         :value="smoothing"

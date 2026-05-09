@@ -42,12 +42,15 @@ const cropOptions = ref<AutoCropOptions>({
   marginMm: 15, // default bleed margin (typical sticker-print convention)
 })
 const maskVisible = ref<boolean>(true)
-// Cut-line smoothing slider value (0–10). Default 2 = subtle smoothing
-// on top of the always-on quadratic-curve render. Persisted only in
-// editor session state for now — the customer's choice doesn't ride
-// to the backend (the printed mask matches whatever's on screen, so
-// the cutter sees the smoothed shape via the uploaded die_cut_mask PNG).
-const smoothingSlider = ref<number>(2)
+// Cut-line smoothing slider value (2–10). Floor is 2 because below that,
+// per-vertex normal-offset self-intersections produce visible spikes/loops
+// in the cut line — see EditorInspector for the longer rationale.
+// Default 3 = subtle smoothing that keeps silhouette detail.
+// Persisted only in editor session state for now — the customer's choice
+// doesn't ride to the backend (the printed mask matches whatever's on
+// screen, so the cutter sees the smoothed shape via the uploaded
+// die_cut_mask PNG).
+const smoothingSlider = ref<number>(3)
 // Show the artwork against the canvas's checker background instead of its
 // original (likely white) background. Matches the reference shop's UX —
 // once a cut polygon exists, the customer sees what the printed sticker

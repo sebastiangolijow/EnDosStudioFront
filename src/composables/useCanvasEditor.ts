@@ -169,12 +169,14 @@ export function useCanvasEditor() {
    *  holographic is vivid in the margin and barely visible over the
    *  artwork itself. */
   const materialActive = ref(false)
-  /** UI smoothing slider value (0–10). Drives Chaikin iterations applied
-   *  to the polygon before rendering. 0 = raw silhouette (just our
-   *  always-on quadraticCurveTo render). 10 = very wavy, no detail —
-   *  silhouette concavities filled, big smooth bumps. Default 2 = subtle.
-   *  Doesn't re-run OpenCV; pure JS geometry on the saved polygon. */
-  const smoothingSlider = ref<number>(2)
+  /** UI smoothing slider value (2–10). Drives perimeter-Gaussian passes
+   *  applied to the polygon before rendering. The minimum is 2 — below
+   *  that, per-vertex normal-offset self-intersections (from sharp
+   *  silhouette concavities like fur tufts) produce visible spikes/loops
+   *  around the cut line. 2 = barely smoothed; 10 = very wavy. Default
+   *  3 = subtle smoothing. Doesn't re-run OpenCV; pure JS geometry on
+   *  the saved polygon. */
+  const smoothingSlider = ref<number>(3)
 
   // === Internals (not reactive) ===
   let resizeObserver: ResizeObserver | null = null
@@ -534,7 +536,9 @@ export function useCanvasEditor() {
    *  re-run OpenCV — the polygon stays the same; only the geometric
    *  smoothing applied at render time changes. */
   function setSmoothingSlider(value: number): void {
-    smoothingSlider.value = Math.max(0, Math.min(10, value))
+    // Floor at 2 — below this, polygon self-intersections become visible.
+    // See the smoothingSlider ref doc for full rationale.
+    smoothingSlider.value = Math.max(2, Math.min(10, value))
     drawMaskLayer()
     // The clip uses the smoothed polygon too, so any time the smoothing
     // changes we redraw the base layer regardless of the "Quitar fondo"
