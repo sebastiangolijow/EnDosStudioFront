@@ -86,7 +86,9 @@ test.describe('order config', () => {
     // Stepper: step 3 active
     await expect(page.getByText('Material y tamaño')).toBeVisible()
 
-    // Pick a material
+    // Pick a material — holografico is small enough at 5×5 q=50 to hit
+    // the 20€ floor under the new (2026-05-09) formula. Useful here as a
+    // visible signal that the floor logic is wired end-to-end.
     await page.getByTestId('material-holografico').click()
     await expect(page.getByTestId('material-holografico')).toHaveAttribute(
       'aria-pressed',
@@ -102,9 +104,8 @@ test.describe('order config', () => {
     }
     await expect(page.getByTestId('quantity-input')).toHaveValue('50')
 
-    // Wait for the debounced quote to land. The gold-standard backend formula
-    // for holografico 5×5cm q=50 with no add-ons is 110 EUR.
-    await expect(page.getByTestId('summary-total')).toHaveText(/110\.00/, { timeout: 5_000 })
+    // ((50+15)/1000)² × 50 × 50€ = 10.5625€ → floored to 20.00€
+    await expect(page.getByTestId('summary-total')).toHaveText(/20\.00/, { timeout: 5_000 })
 
     // Click Continuar al pago — should PATCH the order then route to /checkout/{uuid}
     await page.getByTestId('summary-continue').click()
@@ -122,7 +123,7 @@ test.describe('order config', () => {
     expect(order.quantity).toBe(50)
   })
 
-  test('add-ons: toggling barniz updates the total', async ({ page }) => {
+  test('add-ons: toggling relieve and barniz updates the total', async ({ page }) => {
     const customer = seedActiveCustomer()
     const accessToken = await loginAs(page, customer)
     const draftUuid = seedDraftForCustomer(customer)
@@ -130,25 +131,30 @@ test.describe('order config', () => {
 
     await page.goto(`/order-config/${draftUuid}`)
 
-    // Pick vinilo_blanco at 5×5 cm × 50 = 105 EUR (gold-standard for white vinyl)
+    // Pick a setup that sits comfortably above the 20€ floor so the
+    // additive percent surcharges actually move the displayed total.
+    // vinilo_blanco 10×10cm q=100 → 5951.25 cents ≈ 59.51€ subtotal.
     await page.getByTestId('material-vinilo_blanco').click()
-    await page.getByTestId('size-50').click()
-    for (let i = 0; i < 10; i++) {
-      await page.getByTestId('quantity-decrease').click()
-    }
-    await expect(page.getByTestId('summary-total')).toHaveText(/105\.00/, { timeout: 5_000 })
+    await page.getByTestId('size-100').click()
+    // quantity defaults to 100 — no clicks needed
+    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, { timeout: 5_000 })
 
-    // Toggle Barniz: 105 + 8 = 113
-    await page.getByTestId('addon-varnish').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/113\.00/, { timeout: 5_000 })
+    // Barniz brillo (+20%): 59.5125 × 1.20 = 71.415 → 71.42€
+    await page.getByTestId('varnish-brillo').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/71\.42/, { timeout: 5_000 })
 
-    // Toggle Relieve: 113 + 12 = 125
+    // Relieve (+35%): additive multiplier becomes 1.55 → 92.24€
     await page.getByTestId('addon-relief').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/125\.00/, { timeout: 5_000 })
+    await expect(page.getByTestId('summary-total')).toHaveText(/92\.24/, { timeout: 5_000 })
 
-    // Untoggle Barniz: 125 - 8 = 117
-    await page.getByTestId('addon-varnish').uncheck()
-    await expect(page.getByTestId('summary-total')).toHaveText(/117\.00/, { timeout: 5_000 })
+    // Switch barniz brillo → opaco: same +20%, total unchanged at 92.24€
+    await page.getByTestId('varnish-opaco').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/92\.24/, { timeout: 5_000 })
+
+    // Switch barniz off (radio "none"): drops back to relieve only → 80.34€
+    // (5951.25 × 1.35 = 8034.1875 → 8034 cents)
+    await page.getByTestId('varnish-none').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/80\.34/, { timeout: 5_000 })
   })
 
   test('continue is disabled until material is picked', async ({ page }) => {

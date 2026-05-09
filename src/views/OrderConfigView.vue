@@ -45,9 +45,15 @@ const shape = ref<Shape>('contorneado')
 const widthMm = ref<number>(70) // 7 cm — matches the mockup's default
 const heightMm = ref<number>(70)
 const quantity = ref<number>(100)
-const withDesignService = ref<boolean>(false)
-const withVarnish = ref<boolean>(false)
 const withRelief = ref<boolean>(false)
+const withTintaBlanca = ref<boolean>(false)
+// Two booleans on the wire, mutually exclusive in the UI ("none / brillo /
+// opaco" radio). The model could in theory accept both at once (paying 40%
+// extra), but no real customer wants that and the form prevents it.
+type VarnishChoice = 'none' | 'brillo' | 'opaco'
+const varnishChoice = ref<VarnishChoice>('none')
+const withBarnizBrillo = computed(() => varnishChoice.value === 'brillo')
+const withBarnizOpaco = computed(() => varnishChoice.value === 'opaco')
 const reliefNote = ref<string>('')
 
 const ALL_SHAPES = Object.keys(SHAPE_LABELS) as Shape[]
@@ -78,9 +84,11 @@ async function loadOrder() {
     if (order.width_mm) widthMm.value = order.width_mm
     if (order.height_mm) heightMm.value = order.height_mm
     if (order.quantity && order.quantity >= MIN_QUANTITY) quantity.value = order.quantity
-    withDesignService.value = order.with_design_service
-    withVarnish.value = order.with_varnish
     withRelief.value = order.with_relief
+    withTintaBlanca.value = order.with_tinta_blanca
+    if (order.with_barniz_brillo) varnishChoice.value = 'brillo'
+    else if (order.with_barniz_opaco) varnishChoice.value = 'opaco'
+    else varnishChoice.value = 'none'
     reliefNote.value = order.relief_note ?? ''
 
     // Use the uploaded original image as the preview thumbnail.
@@ -123,9 +131,10 @@ async function fetchQuote() {
       width_mm: widthMm.value,
       height_mm: heightMm.value,
       quantity: quantity.value,
-      with_design_service: withDesignService.value,
-      with_varnish: withVarnish.value,
       with_relief: withRelief.value,
+      with_tinta_blanca: withTintaBlanca.value,
+      with_barniz_brillo: withBarnizBrillo.value,
+      with_barniz_opaco: withBarnizOpaco.value,
     })
     totalEur.value = quote.total_eur
   } catch {
@@ -138,7 +147,15 @@ async function fetchQuote() {
 
 // Re-quote whenever any pricing input changes
 watch(
-  [material, widthMm, heightMm, quantity, withDesignService, withVarnish, withRelief],
+  [
+    material,
+    widthMm,
+    heightMm,
+    quantity,
+    withRelief,
+    withTintaBlanca,
+    varnishChoice,
+  ],
   () => {
     scheduleQuote()
   },
@@ -159,9 +176,10 @@ async function onContinue() {
       width_mm: widthMm.value,
       height_mm: heightMm.value,
       quantity: quantity.value,
-      with_design_service: withDesignService.value,
-      with_varnish: withVarnish.value,
       with_relief: withRelief.value,
+      with_tinta_blanca: withTintaBlanca.value,
+      with_barniz_brillo: withBarnizBrillo.value,
+      with_barniz_opaco: withBarnizOpaco.value,
       relief_note: reliefNote.value,
     })
     router.push({ name: 'checkout', params: { uuid: orderUuid.value } })
@@ -284,40 +302,6 @@ onMounted(loadOrder)
           <div class="flex flex-col gap-3">
             <label class="flex items-center gap-3 rounded-md border border-border bg-surface-2 px-4 py-3 cursor-pointer">
               <input
-                v-model="withDesignService"
-                type="checkbox"
-                class="size-4 accent-primary"
-                data-testid="addon-design"
-              >
-              <div class="flex-1">
-                <p class="text-sm font-semibold text-text">
-                  Maquetación de archivos
-                </p>
-                <p class="text-xs text-text-muted">
-                  Ajuste profesional de tu diseño antes de imprimir.
-                </p>
-              </div>
-              <span class="text-sm text-text-muted">+€8,00</span>
-            </label>
-            <label class="flex items-center gap-3 rounded-md border border-border bg-surface-2 px-4 py-3 cursor-pointer">
-              <input
-                v-model="withVarnish"
-                type="checkbox"
-                class="size-4 accent-primary"
-                data-testid="addon-varnish"
-              >
-              <div class="flex-1">
-                <p class="text-sm font-semibold text-text">
-                  Barniz
-                </p>
-                <p class="text-xs text-text-muted">
-                  Capa protectora con acabado mate o brillante.
-                </p>
-              </div>
-              <span class="text-sm text-text-muted">+€8,00</span>
-            </label>
-            <label class="flex items-center gap-3 rounded-md border border-border bg-surface-2 px-4 py-3 cursor-pointer">
-              <input
                 v-model="withRelief"
                 type="checkbox"
                 class="size-4 accent-primary"
@@ -331,7 +315,7 @@ onMounted(loadOrder)
                   Zonas elevadas en partes específicas del sticker.
                 </p>
               </div>
-              <span class="text-sm text-text-muted">+€12,00</span>
+              <span class="text-sm text-text-muted">+35%</span>
             </label>
             <textarea
               v-if="withRelief"
@@ -340,6 +324,67 @@ onMounted(loadOrder)
               class="min-h-20 rounded-md border border-border bg-surface-2 p-3 text-sm text-text placeholder:text-text-muted focus-visible:border-primary focus-visible:outline-none"
               data-testid="relief-note"
             />
+
+            <label class="flex items-center gap-3 rounded-md border border-border bg-surface-2 px-4 py-3 cursor-pointer">
+              <input
+                v-model="withTintaBlanca"
+                type="checkbox"
+                class="size-4 accent-primary"
+                data-testid="addon-tinta-blanca"
+              >
+              <div class="flex-1">
+                <p class="text-sm font-semibold text-text">
+                  Tinta blanca
+                </p>
+                <p class="text-xs text-text-muted">
+                  Para colores opacos sobre vinilos transparentes u oscuros.
+                </p>
+              </div>
+              <span class="text-sm text-text-muted">+35%</span>
+            </label>
+
+            <fieldset class="rounded-md border border-border bg-surface-2 px-4 py-3">
+              <legend class="text-sm font-semibold text-text">
+                Barniz
+              </legend>
+              <p class="mt-1 text-xs text-text-muted">
+                Capa protectora opcional. Elegí brillo u opaco.
+              </p>
+              <div class="mt-3 flex flex-col gap-2">
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input
+                    v-model="varnishChoice"
+                    type="radio"
+                    value="none"
+                    class="size-4 accent-primary"
+                    data-testid="varnish-none"
+                  >
+                  <span class="text-sm text-text">Sin barniz</span>
+                </label>
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input
+                    v-model="varnishChoice"
+                    type="radio"
+                    value="brillo"
+                    class="size-4 accent-primary"
+                    data-testid="varnish-brillo"
+                  >
+                  <span class="flex-1 text-sm text-text">Barniz brillo</span>
+                  <span class="text-sm text-text-muted">+20%</span>
+                </label>
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input
+                    v-model="varnishChoice"
+                    type="radio"
+                    value="opaco"
+                    class="size-4 accent-primary"
+                    data-testid="varnish-opaco"
+                  >
+                  <span class="flex-1 text-sm text-text">Barniz opaco</span>
+                  <span class="text-sm text-text-muted">+20%</span>
+                </label>
+              </div>
+            </fieldset>
           </div>
         </section>
 
@@ -361,9 +406,10 @@ onMounted(loadOrder)
           :width-mm="widthMm"
           :height-mm="heightMm"
           :quantity="quantity"
-          :with-design-service="withDesignService"
-          :with-varnish="withVarnish"
           :with-relief="withRelief"
+          :with-tinta-blanca="withTintaBlanca"
+          :with-barniz-brillo="withBarnizBrillo"
+          :with-barniz-opaco="withBarnizOpaco"
           :total-eur="totalEur"
           :thumbnail-url="thumbnailUrl"
           :is-quoting="isQuoting"

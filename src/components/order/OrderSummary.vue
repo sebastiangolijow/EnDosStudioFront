@@ -9,9 +9,10 @@ interface Props {
   widthMm: number
   heightMm: number
   quantity: number
-  withDesignService: boolean
-  withVarnish: boolean
   withRelief: boolean
+  withTintaBlanca: boolean
+  withBarnizBrillo: boolean
+  withBarnizOpaco: boolean
   /** Pre-formatted EUR string from /orders/quote/. Empty = quote pending. */
   totalEur: string
   /** Original-image URL from the order's files. Optional placeholder. */
@@ -100,28 +101,6 @@ const ctaDisabled = computed(
         </dd>
       </div>
       <div
-        v-if="withDesignService"
-        class="flex justify-between gap-3"
-      >
-        <dt class="uppercase tracking-wide text-text-muted">
-          + Maquetación
-        </dt>
-        <dd class="font-medium text-text">
-          €8,00
-        </dd>
-      </div>
-      <div
-        v-if="withVarnish"
-        class="flex justify-between gap-3"
-      >
-        <dt class="uppercase tracking-wide text-text-muted">
-          + Barniz
-        </dt>
-        <dd class="font-medium text-text">
-          €8,00
-        </dd>
-      </div>
-      <div
         v-if="withRelief"
         class="flex justify-between gap-3"
       >
@@ -129,7 +108,40 @@ const ctaDisabled = computed(
           + Relieve
         </dt>
         <dd class="font-medium text-text">
-          €12,00
+          +35%
+        </dd>
+      </div>
+      <div
+        v-if="withTintaBlanca"
+        class="flex justify-between gap-3"
+      >
+        <dt class="uppercase tracking-wide text-text-muted">
+          + Tinta blanca
+        </dt>
+        <dd class="font-medium text-text">
+          +35%
+        </dd>
+      </div>
+      <div
+        v-if="withBarnizBrillo"
+        class="flex justify-between gap-3"
+      >
+        <dt class="uppercase tracking-wide text-text-muted">
+          + Barniz brillo
+        </dt>
+        <dd class="font-medium text-text">
+          +20%
+        </dd>
+      </div>
+      <div
+        v-if="withBarnizOpaco"
+        class="flex justify-between gap-3"
+      >
+        <dt class="uppercase tracking-wide text-text-muted">
+          + Barniz opaco
+        </dt>
+        <dd class="font-medium text-text">
+          +20%
         </dd>
       </div>
     </dl>

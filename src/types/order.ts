@@ -91,9 +91,10 @@ export interface Order {
   width_mm: number
   height_mm: number
   quantity: number
-  with_design_service: boolean
-  with_varnish: boolean
   with_relief: boolean
+  with_tinta_blanca: boolean
+  with_barniz_brillo: boolean
+  with_barniz_opaco: boolean
   relief_note: string
 
   // Shipping (flat columns — single shipping address per order)
@@ -135,9 +136,10 @@ export interface OrderUpdatePayload {
   width_mm?: number
   height_mm?: number
   quantity?: number
-  with_design_service?: boolean
-  with_varnish?: boolean
   with_relief?: boolean
+  with_tinta_blanca?: boolean
+  with_barniz_brillo?: boolean
+  with_barniz_opaco?: boolean
   relief_note?: string
   recipient_name?: string
   street_line_1?: string
@@ -152,9 +154,10 @@ export interface PriceQuoteRequest {
   width_mm: number
   height_mm: number
   quantity: number
-  with_design_service?: boolean
-  with_varnish?: boolean
   with_relief?: boolean
+  with_tinta_blanca?: boolean
+  with_barniz_brillo?: boolean
+  with_barniz_opaco?: boolean
 }
 
 export interface PriceQuoteResponse {

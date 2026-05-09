@@ -89,9 +89,10 @@ export const ordersService = {
         width_mm: request.width_mm,
         height_mm: request.height_mm,
         quantity: request.quantity,
-        with_design_service: request.with_design_service ?? false,
-        with_varnish: request.with_varnish ?? false,
         with_relief: request.with_relief ?? false,
+        with_tinta_blanca: request.with_tinta_blanca ?? false,
+        with_barniz_brillo: request.with_barniz_brillo ?? false,
+        with_barniz_opaco: request.with_barniz_opaco ?? false,
       },
     })
     return response.data

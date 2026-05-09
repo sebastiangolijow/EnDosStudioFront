@@ -383,7 +383,7 @@ If anything in §4.12 of the design pack contradicts this section, **this sectio
 - `DELETE /api/v1/orders/{uuid}/files/{file_uuid}/` — delete (then re-POST to swap; `unique_together(order, kind)` enforces one-per-slot)
 
 ### Pricing preview (`/api/v1/orders/quote/`)
-- `GET /api/v1/orders/quote/?material=...&width_mm=...&height_mm=...&quantity=...&with_design_service=...&with_varnish=...&with_relief=...` → `{ total_amount_cents, total_eur, currency }`. Pure function, no DB write — perfect for live updates as the customer drags a slider.
+- `GET /api/v1/orders/quote/?material=...&width_mm=...&height_mm=...&quantity=...&with_relief=...&with_tinta_blanca=...&with_barniz_brillo=...&with_barniz_opaco=...` → `{ total_amount_cents, total_eur, currency }`. Pure function, no DB write — perfect for live updates as the customer drags a slider.
 
 ### Stripe webhook (server-only)
 - `POST /api/v1/payments/webhooks/stripe/` — Stripe-only, CSRF-exempt, signature-verified. The frontend never touches this URL.
@@ -396,22 +396,32 @@ If anything in §4.12 of the design pack contradicts this section, **this sectio
 - `409` conflict — wrong status for this transition (PATCH on placed, place on non-draft, cancel after paid, deliver before shipped). Render a clear "this order is no longer in a state where you can do that" message.
 - `502` Stripe error during checkout (network or Stripe outage). Retry-friendly.
 
-## 💰 Pricing model (real, locked)
+## 💰 Pricing model (real, locked — repriced 2026-05-09)
 
-`compute_total_cents()` on the backend is pure and deterministic. The frontend should never duplicate this math — always call `/orders/quote/` for the live total. But for explanation:
+`compute_total_cents()` on the backend is pure and deterministic. The
+frontend should never duplicate this math — always call `/orders/quote/`
+for the live total. But for explanation:
 
 ```
-total_eur = material_base
-          + (width_cm + height_cm) × 1€
-          + quantity × 1€
-          + (8€ if with_design_service)
-          + (8€ if with_varnish)
-          + (12€ if with_relief)
+area_factor      = ((width_mm + 15) / 1000) × ((height_mm + 15) / 1000)
+                   # area in m², including a 15 mm bleed margin per side
+subtotal_eur     = area_factor × quantity × material_price_eur
+addon_multiplier = 1
+                 + (0.35 if with_relief)
+                 + (0.35 if with_tinta_blanca)
+                 + (0.20 if with_barniz_brillo)
+                 + (0.20 if with_barniz_opaco)
+total_eur        = max(subtotal_eur × addon_multiplier, 20.00)
 ```
 
-**Material base prices** (the "Elegir material" picker — gold-standard scenario `holografico, 5×5 cm, q=50` → 110€):
+Add-on surcharges compose **additively** (sum the percents, then
+multiply once). The 20€ minimum applies AFTER add-ons — small orders
+floor regardless of which add-ons are ticked.
 
-| Material key | Display | Base €  |
+**Material prices** (the "Elegir material" picker; rate is "€ per m² per
+sticker" plugged into the formula above):
+
+| Material key | Display | Rate €  |
 |---|---|---|
 | `vinilo_blanco` | Vinilo blanco | 45 |
 | `vinilo_transparente` | Vinilo transparente | 45 |
@@ -422,6 +432,17 @@ total_eur = material_base
 | `luminiscente` | Vinilo luminiscente | 55 |
 | `eggshell` | Vinilo eggshell | 55 |
 | `eggshell_holografico` | Vinilo eggshell holográfico | 60 |
+
+**Gold-standard scenarios** (kept in the test suite as regressions):
+- `vinilo_blanco 10×10cm q=100, no add-ons` → **59.51€** (above floor)
+- `holografico 5×5cm q=50, no add-ons` → **20.00€** (floor case)
+- `vinilo_blanco 10×10cm q=100 +relief +brillo` → **92.24€** (multiplier 1.55)
+
+**Add-on UX**: Relieve and Tinta blanca are independent checkboxes.
+Barniz is a single radio group with three options (`none` / `brillo` /
+`opaco`) — gloss and matte are mutually exclusive in the UI but ride two
+booleans on the wire (`with_barniz_brillo`, `with_barniz_opaco`) so the
+backend formula stays a clean sum-of-percentages.
 
 **Constraints** (frontend should validate before submitting; backend rejects with 400 on violation):
 - `width_mm` and `height_mm`: multiples of 5, ≥ 25 (= 2.5 cm). Display in cm (`mm / 10`).
