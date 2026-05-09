@@ -254,14 +254,25 @@ export function useCanvasEditor() {
     ctx.clearRect(0, 0, rect.width, rect.height)
     if (!fit) return
 
-    // Background-removal mode: clip drawing so the photo's background is
-    // hidden. Prefer the TIGHT artwork polygon when available — that lets
-    // the colored halo show in the bleed margin between the artwork and
-    // the cut line, matching the reference shop. Fall back to the cut
-    // polygon (which includes the bleed) for geometric shapes and for
-    // strategies that didn't produce a tight contour.
-    const clipPoints = artworkPoints.value ?? maskPoints.value
-    const shouldClip = removeBackground.value && clipPoints && clipPoints.length > 0
+    // Whenever a cut polygon exists, the base image is ALWAYS clipped to
+    // it. That's what `corte contorneado` means: the customer prints +
+    // cuts only what's inside the polygon, so the preview should never
+    // show the source image's background bleeding past the cut line.
+    //
+    // The "Quitar fondo" toggle picks WHICH polygon clips the base:
+    //   - ON  → tight artwork polygon (`artworkPoints`). Lets the halo
+    //           show in the bleed margin between the artwork edge and
+    //           the cut line, matching the reference shop.
+    //   - OFF → the full cut polygon (`maskPoints`), which includes the
+    //           bleed margin. The base image fills the cut area edge-to-
+    //           edge — no halo bleed-through. Customer sees the printed
+    //           sticker as it would arrive at their door.
+    // Geometric shapes (cuadrado/circulo/redondeadas) have no
+    // `artworkPoints`; they always clip to the cut polygon regardless.
+    const clipPoints = removeBackground.value
+      ? (artworkPoints.value ?? maskPoints.value)
+      : maskPoints.value
+    const shouldClip = !!clipPoints && clipPoints.length > 0
     if (shouldClip) {
       ctx.save()
       // Smooth the clip path with the same iteration count as the mask
@@ -284,15 +295,16 @@ export function useCanvasEditor() {
     //  - "vinilo transparente" → drop hard so the checker reads through
     //    (the customer reads it as "transparent vinyl, surface behind
     //    shows through").
-    //  - With a material set + a polygon present → drop subtly (~85%)
-    //    so the holographic / metallic halo BLEEDS through the artwork
-    //    a little. Reference shop: halo vivid in the bleed margin,
-    //    barely visible over the artwork itself. We get the "barely"
-    //    by letting the underlying mask layer peek through.
+    //  - With a material set AND "Quitar fondo" on (so the clip is the
+    //    tight artwork polygon, not the cut polygon) → drop subtly to
+    //    ~85% so the holographic / metallic halo BLEEDS through the
+    //    artwork a little. Reference shop: halo vivid in the bleed
+    //    margin, barely visible over the artwork itself. We get the
+    //    "barely" by letting the underlying mask layer peek through.
     const priorAlpha = ctx.globalAlpha
     if (transparentMaterial.value) {
       ctx.globalAlpha = priorAlpha * 0.55
-    } else if (materialActive.value && shouldClip) {
+    } else if (materialActive.value && removeBackground.value && shouldClip) {
       ctx.globalAlpha = priorAlpha * 0.88
     }
     ctx.drawImage(image.value.source, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
@@ -475,16 +487,20 @@ export function useCanvasEditor() {
     maskPoints.value = points
     artworkPoints.value = artwork
     drawMaskLayer()
-    // Background-removal clips the base layer to the polygon, so a new
-    // polygon means we need to repaint the base too.
-    if (removeBackground.value) drawBaseLayer()
+    // The base layer is always clipped to the cut polygon when one
+    // exists (see drawBaseLayer for why), so a new polygon ALWAYS
+    // means we need to repaint the base — regardless of the
+    // "Quitar fondo" toggle.
+    drawBaseLayer()
   }
 
   function clearMask(): void {
     maskPoints.value = null
     artworkPoints.value = null
     drawMaskLayer()
-    if (removeBackground.value) drawBaseLayer()
+    // Same reasoning: clearing the mask also means the base layer
+    // stops being clipped, so it needs a full repaint.
+    drawBaseLayer()
   }
 
   function setMaskVisible(visible: boolean): void {
@@ -520,7 +536,10 @@ export function useCanvasEditor() {
   function setSmoothingSlider(value: number): void {
     smoothingSlider.value = Math.max(0, Math.min(10, value))
     drawMaskLayer()
-    if (removeBackground.value) drawBaseLayer()
+    // The clip uses the smoothed polygon too, so any time the smoothing
+    // changes we redraw the base layer regardless of the "Quitar fondo"
+    // toggle (the clip exists either way under the new semantics).
+    drawBaseLayer()
   }
 
   /**

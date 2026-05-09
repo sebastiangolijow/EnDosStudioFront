@@ -262,14 +262,17 @@ const SWATCH_CLASSES: Record<Material, string> = {
       >
     </label>
 
-    <!-- Background-removal toggle: clips the base image to the cut polygon
-         so the customer sees the artwork on the canvas's checker pattern,
-         not the original (likely white) photo background. -->
+    <!-- Background-removal toggle: when ON, the base image is clipped
+         to the tight ARTWORK polygon (no bleed), letting the colored
+         halo show in the bleed margin. When OFF, the base image clips
+         to the FULL cut polygon (bleed included) so the customer sees
+         the printed sticker as it'd arrive — full bleed, no halo
+         peek-through. -->
     <label class="flex items-center justify-between gap-3 cursor-pointer">
       <span class="text-sm text-text">
         Quitar fondo
         <span class="block text-xs text-text-muted">
-          Solo el sticker, sin el fondo de la imagen.
+          Recorta más cerca del diseño y deja ver el halo del material en el margen.
         </span>
       </span>
       <input
