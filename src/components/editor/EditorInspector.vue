@@ -313,7 +313,7 @@ const SWATCH_CLASSES: Record<Material, string> = {
          (concavities filled, big smooth bumps). -->
     <div>
       <div class="mb-1 flex items-baseline justify-between gap-2">
-        <label class="text-sm text-text">Suavizado</label>
+        <label class="text-sm text-text">Suavidad</label>
         <span class="text-xs text-text-muted">{{ smoothing }}</span>
       </div>
       <input
@@ -327,73 +327,20 @@ const SWATCH_CLASSES: Record<Material, string> = {
         @input="$emit('update:smoothing', Number(($event.target as HTMLInputElement).value))"
       >
       <p class="mt-1 text-xs text-text-muted">
-        0 sigue cada detalle del diseño · 10 más onda y sin detalles.
+        Prolijidad de los bordes
       </p>
     </div>
 
-    <hr class="border-border">
+    <!--
+      The previous "Detección" section (Canny thresholds + pre-blur) was
+      removed because those sliders only affect the Canny strategy, which
+      is the LAST of three detection strategies and rarely runs in
+      practice (alpha + bg-trim cover almost every real customer image).
+      Customers were getting confused dragging sliders that did nothing.
 
-    <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
-      Detección
-    </h2>
-
-    <!-- Canny low threshold -->
-    <div>
-      <div class="mb-1 flex items-baseline justify-between gap-2">
-        <label class="text-sm text-text">Umbral bajo</label>
-        <span class="text-xs text-text-muted">{{ options.cannyLow ?? 50 }}</span>
-      </div>
-      <input
-        type="range"
-        min="10"
-        max="150"
-        step="5"
-        :value="options.cannyLow ?? 50"
-        class="w-full accent-primary"
-        data-testid="slider-canny-low"
-        @input="$emit('update:options', { ...options, cannyLow: Number(($event.target as HTMLInputElement).value) })"
-      >
-    </div>
-
-    <!-- Canny high threshold -->
-    <div>
-      <div class="mb-1 flex items-baseline justify-between gap-2">
-        <label class="text-sm text-text">Umbral alto</label>
-        <span class="text-xs text-text-muted">{{ options.cannyHigh ?? 150 }}</span>
-      </div>
-      <input
-        type="range"
-        min="50"
-        max="300"
-        step="5"
-        :value="options.cannyHigh ?? 150"
-        class="w-full accent-primary"
-        data-testid="slider-canny-high"
-        @input="$emit('update:options', { ...options, cannyHigh: Number(($event.target as HTMLInputElement).value) })"
-      >
-    </div>
-
-    <!-- Blur radius (Canny pre-blur). Renamed to "Borrosidad" so it doesn't
-         collide with the user-facing "Suavizado" slider in Margen y forma. -->
-    <div>
-      <div class="mb-1 flex items-baseline justify-between gap-2">
-        <label class="text-sm text-text">Borrosidad de bordes</label>
-        <span class="text-xs text-text-muted">{{ options.blurRadius ?? 5 }} px</span>
-      </div>
-      <input
-        type="range"
-        min="1"
-        max="15"
-        step="2"
-        :value="options.blurRadius ?? 5"
-        class="w-full accent-primary"
-        data-testid="slider-blur"
-        @input="$emit('update:options', { ...options, blurRadius: Number(($event.target as HTMLInputElement).value) })"
-      >
-    </div>
-
-    <p class="text-xs text-text-muted">
-      Ajustá los valores si la línea de corte no captura bien el contorno de tu sticker.
-    </p>
+      Defaults (cannyLow=50, cannyHigh=150, blurRadius=5) still live in
+      the worker so Canny still works when it does run; we just don't
+      expose them in the UI.
+    -->
   </aside>
 </template>

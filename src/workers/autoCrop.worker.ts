@@ -208,6 +208,96 @@ function post(msg: OutgoingMessage) {
 }
 
 /**
+ * Flood-fill a binary mask from every edge pixel that is currently 255.
+ * Returns a NEW Uint8Array of the same size; 255 wherever the input mask
+ * was 255 AND reachable from the perimeter via 4-connectivity, 0 otherwise.
+ *
+ * Used by the bg-trim strategy to discriminate "real background" (the
+ * pixels that wrap around to the edge) from "background-colored artwork
+ * interior" (e.g. black hair on a black background — pixels that match
+ * the bg color but are enclosed by colored artwork). Without this, an
+ * inverted near-bg mask would treat the black hair as "not artwork" and
+ * the cut polygon would slice through it.
+ *
+ * Standard 4-connectivity BFS. Single allocation of the output buffer
+ * + a circular queue (typed-array indices, not objects) — under 10 ms
+ * on a 1024×1024 mask.
+ */
+function perimeterFloodMask(
+  src: Uint8Array,
+  width: number,
+  height: number,
+): Uint8Array {
+  const total = width * height
+  const out = new Uint8Array(total)
+  // Plain JS array as a stack is fastest for this size — no need for a
+  // typed circular queue. 1M-pixel worst case → ~250k stack pushes.
+  const stack: number[] = []
+
+  // Seed every edge pixel that's currently bg-colored.
+  for (let x = 0; x < width; x++) {
+    if (src[x] === 255) {
+      out[x] = 255
+      stack.push(x)
+    }
+    const bot = (height - 1) * width + x
+    if (src[bot] === 255) {
+      out[bot] = 255
+      stack.push(bot)
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    const left = y * width
+    if (src[left] === 255) {
+      out[left] = 255
+      stack.push(left)
+    }
+    const right = y * width + (width - 1)
+    if (src[right] === 255) {
+      out[right] = 255
+      stack.push(right)
+    }
+  }
+
+  while (stack.length > 0) {
+    const i = stack.pop() as number
+    const x = i % width
+    const y = (i - x) / width
+
+    if (x > 0) {
+      const j = i - 1
+      if (src[j] === 255 && out[j] === 0) {
+        out[j] = 255
+        stack.push(j)
+      }
+    }
+    if (x < width - 1) {
+      const j = i + 1
+      if (src[j] === 255 && out[j] === 0) {
+        out[j] = 255
+        stack.push(j)
+      }
+    }
+    if (y > 0) {
+      const j = i - width
+      if (src[j] === 255 && out[j] === 0) {
+        out[j] = 255
+        stack.push(j)
+      }
+    }
+    if (y < height - 1) {
+      const j = i + width
+      if (src[j] === 255 && out[j] === 0) {
+        out[j] = 255
+        stack.push(j)
+      }
+    }
+  }
+
+  return out
+}
+
+/**
  * Offset a closed polygon outward by `distance` (in the same units as the
  * polygon points). Each vertex is moved along the local outward normal
  * computed from its neighboring vertices' edge bisector.
@@ -508,18 +598,30 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
         const bgHighSrc = cv.matFromArray(1, 1, cv.CV_8UC3, hi)
         try {
           cv.inRange(rgb, bgLowSrc, bgHighSrc, colorMask)
-          // colorMask = 255 where pixel ≈ background. Invert to get artwork.
-          cv.bitwise_not(colorMask, colorMask)
-          // Aggressive close to bridge any breaks where artwork chunks were
-          // disconnected by edge shadow / cuffs / dark stitching. NO open —
-          // an open here erodes legitimate thin features (cuffs, hems,
-          // narrow handles) and was the cause of the EME sweater's bottom
-          // edge missing from the cut line. Min-area filtering on the
-          // contour pass below handles speckle instead.
+          // colorMask = 255 where pixel ≈ background color.
+          //
+          // KEY INSIGHT: Naively inverting this mask treats every
+          // bg-colored pixel as "not artwork" — which fails when the
+          // artwork itself contains regions that match the bg color
+          // (e.g. black hair / faces / clothing on a black background).
+          // The black hair gets excluded from the silhouette and the
+          // cut polygon slices through it.
+          //
+          // Fix: only "connected-to-the-edge" bg pixels are real
+          // background. A bg-colored pixel surrounded by colored
+          // artwork is part of the artwork. Run a perimeter flood-fill
+          // on the colorMask, keep only what was reached, and treat
+          // everything else as artwork.
+          const colorMaskBytes = (colorMask as unknown as { data: Uint8Array }).data
+          const realBg = perimeterFloodMask(colorMaskBytes, workingWidth, workingHeight)
+          // Build the artwork mask in place: 255 where NOT real-bg.
+          for (let i = 0; i < colorMaskBytes.length; i++) {
+            colorMaskBytes[i] = realBg[i] === 255 ? 0 : 255
+          }
+          // Aggressive close to bridge any breaks where the bg-color
+          // mask had ragged edges that the flood couldn't seal. NO
+          // open — would erode legitimate thin features.
           cv.morphologyEx(colorMask, colorMask, cv.MORPH_CLOSE, morphKernelWide)
-          // bg-trim is robust enough to skip the noise floor; a 0.1%-of-
-          // canvas threshold lets thin pieces (e.g. a narrow sweater hem)
-          // survive while still rejecting actual specks.
           if (paintContoursFromMask(colorMask, totalPixels * 0.001))
             strategyUsed = 'bg-trim'
         } finally {
