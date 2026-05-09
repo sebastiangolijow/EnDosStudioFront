@@ -4,6 +4,16 @@ import { useAuthStore } from '@/stores/auth.store'
 const routes: RouteRecordRaw[] = [
   // --- Public ---
   { path: '/', name: 'home', component: () => import('@/views/HomeView.vue') },
+  {
+    path: '/catalogo',
+    name: 'catalog',
+    component: () => import('@/views/CatalogView.vue'),
+  },
+  {
+    path: '/catalogo/:slug',
+    name: 'catalog-detail',
+    component: () => import('@/views/CatalogDetailView.vue'),
+  },
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
   { path: '/register', name: 'register', component: () => import('@/views/RegisterView.vue') },
   {
@@ -83,6 +93,26 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresAdmin: true },
   },
 
+  // --- Catalog admin (M3a) — staff (admin OR shop_staff) ---
+  {
+    path: '/admin/products',
+    name: 'admin-products',
+    component: () => import('@/views/AdminProductsView.vue'),
+    meta: { requiresAuth: true, requiresStaff: true },
+  },
+  {
+    path: '/admin/products/new',
+    name: 'admin-product-new',
+    component: () => import('@/views/AdminProductFormView.vue'),
+    meta: { requiresAuth: true, requiresStaff: true },
+  },
+  {
+    path: '/admin/products/:slug/edit',
+    name: 'admin-product-edit',
+    component: () => import('@/views/AdminProductFormView.vue'),
+    meta: { requiresAuth: true, requiresStaff: true },
+  },
+
   // --- Catch-all ---
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
@@ -103,6 +133,10 @@ router.beforeEach((to) => {
   }
 
   if (to.meta.requiresAdmin && !auth.isAdmin) {
+    return { name: 'home' }
+  }
+
+  if (to.meta.requiresStaff && !auth.isShopStaff) {
     return { name: 'home' }
   }
 

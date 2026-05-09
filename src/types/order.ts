@@ -1,3 +1,5 @@
+import type { ProductRef } from './product'
+
 /**
  * Order lifecycle. Snake_case strings on the wire — match exactly.
  * Translate for display via STATUS_LABELS, never store the translation as the value.
@@ -72,6 +74,14 @@ export const MAX_QUANTITY = 100_000
 export type OrderFileKind = 'original' | 'die_cut_mask'
 // 'relief_mask' is reserved for when drawn-relief lands; not in M2.
 
+/**
+ * Order kind discriminator (M3a).
+ *  - 'sticker': the M2 custom-sticker flow (editor + cut-path + area pricing).
+ *  - 'catalog': a single non-sticker product purchase (skips editor entirely).
+ * Mixed cart with both is M3b.
+ */
+export type OrderKind = 'sticker' | 'catalog'
+
 export interface OrderFile {
   uuid: string
   kind: OrderFileKind
@@ -83,9 +93,10 @@ export interface OrderFile {
 
 export interface Order {
   uuid: string
+  kind: OrderKind
   status: OrderStatus
 
-  // Sticker spec
+  // Sticker spec — set when kind='sticker'; empty/zero defaults when kind='catalog'.
   material: Material | ''
   shape: Shape
   width_mm: number
@@ -96,6 +107,11 @@ export interface Order {
   with_barniz_brillo: boolean
   with_barniz_opaco: boolean
   relief_note: string
+
+  // Catalog — set when kind='catalog'; null/0 when kind='sticker'.
+  product: string | null // UUID
+  product_quantity: number
+  product_detail: ProductRef | null // nested embed for the catalog summary
 
   // Shipping (flat columns — single shipping address per order)
   recipient_name: string
@@ -131,6 +147,8 @@ export interface Order {
  * Strict subset of Order — server rejects unknown fields.
  */
 export interface OrderUpdatePayload {
+  kind?: OrderKind
+  // Sticker
   material?: Material
   shape?: Shape
   width_mm?: number
@@ -141,12 +159,23 @@ export interface OrderUpdatePayload {
   with_barniz_brillo?: boolean
   with_barniz_opaco?: boolean
   relief_note?: string
+  // Catalog
+  product?: string | null
+  product_quantity?: number
+  // Shipping
   recipient_name?: string
   street_line_1?: string
   street_line_2?: string
   city?: string
   postal_code?: string
   country?: string
+}
+
+/** POST /orders/ payload — minimal. */
+export interface CreateCatalogOrderPayload {
+  kind: 'catalog'
+  product: string // UUID
+  product_quantity: number
 }
 
 export interface PriceQuoteRequest {

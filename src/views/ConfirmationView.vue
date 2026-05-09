@@ -33,6 +33,8 @@ async function loadOrder() {
 
 const shortId = computed(() => (order.value ? `#${order.value.uuid.slice(0, 8)}` : ''))
 
+const isCatalogOrder = computed<boolean>(() => order.value?.kind === 'catalog')
+
 const sizeLabel = computed(() => {
   if (!order.value || !order.value.width_mm || !order.value.height_mm) return '—'
   return `${order.value.width_mm / 10}×${order.value.height_mm / 10} cm`
@@ -44,6 +46,9 @@ const materialLabel = computed(() =>
 
 const thumbnailUrl = computed<string | null>(() => {
   if (!order.value) return null
+  if (isCatalogOrder.value) {
+    return order.value.product_detail?.image ?? null
+  }
   const original = order.value.files.find((f) => f.kind === 'original')
   return original?.file ?? null
 })
@@ -78,14 +83,17 @@ onMounted(loadOrder)
         <StatusBadge :status="order.status" />
       </div>
 
-      <!-- Order summary card -->
-      <AppCard class="mx-auto mt-8 max-w-md text-left">
+      <!-- Order summary card (kind-aware) -->
+      <AppCard
+        class="mx-auto mt-8 max-w-md text-left"
+        :data-testid="isCatalogOrder ? 'confirmation-catalog-summary' : 'confirmation-sticker-summary'"
+      >
         <div class="flex items-center gap-4">
           <div class="size-20 shrink-0 overflow-hidden rounded-md border border-border bg-surface-2">
             <img
               v-if="thumbnailUrl"
               :src="thumbnailUrl"
-              :alt="`Diseño del pedido ${shortId}`"
+              :alt="`Pedido ${shortId}`"
               class="size-full object-cover"
             >
             <div
@@ -96,10 +104,15 @@ onMounted(loadOrder)
           </div>
           <div class="min-w-0 flex-1">
             <p class="truncate font-semibold text-text">
-              {{ materialLabel }}
+              {{ isCatalogOrder ? (order.product_detail?.name ?? '—') : materialLabel }}
             </p>
             <p class="text-sm text-text-muted">
-              {{ sizeLabel }} · {{ order.quantity }} unidades
+              <template v-if="isCatalogOrder">
+                {{ order.product_quantity }} unidad(es)
+              </template>
+              <template v-else>
+                {{ sizeLabel }} · {{ order.quantity }} unidades
+              </template>
             </p>
             <p class="mt-1 font-bold text-text">
               €{{ order.total_eur }}
@@ -116,7 +129,16 @@ onMounted(loadOrder)
         >
           Ir al dashboard
         </AppButton>
-        <AppButton @click="router.push('/upload')">
+        <AppButton
+          v-if="isCatalogOrder"
+          @click="router.push('/catalogo')"
+        >
+          Seguir comprando
+        </AppButton>
+        <AppButton
+          v-else
+          @click="router.push('/upload')"
+        >
           Crear otro pedido
         </AppButton>
       </div>

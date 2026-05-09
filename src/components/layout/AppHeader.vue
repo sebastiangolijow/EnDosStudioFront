@@ -10,7 +10,7 @@ const router = useRouter()
 const { logout } = useAuth()
 
 const navLinks = computed(() => [
-  { to: '/', label: 'Productos' },
+  { to: '/catalogo', label: 'Catálogo' },
   { to: '/#how', label: 'Cómo funciona' },
   { to: '/#materials', label: 'Materiales' },
   { to: '/#inspiration', label: 'Inspiración' },

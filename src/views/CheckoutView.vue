@@ -5,6 +5,7 @@ import AppStepper from '@/components/ui/AppStepper.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import OrderSummary from '@/components/order/OrderSummary.vue'
+import CatalogOrderSummary from '@/components/catalog/CatalogOrderSummary.vue'
 import ShippingForm from '@/components/order/ShippingForm.vue'
 import { ordersService } from '@/services/orders.service'
 import { useToast } from '@/composables/useToast'
@@ -14,17 +15,28 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 
-const steps = [
+// Stepper differs by kind. Catalog orders skip upload/editor/order-config —
+// they go straight from /catalogo/:slug to /checkout/:uuid.
+const STICKER_STEPS = [
   { number: 1, label: 'Subir diseño' },
   { number: 2, label: 'Editar' },
   { number: 3, label: 'Material y tamaño' },
   { number: 4, label: 'Resumen' },
+]
+const CATALOG_STEPS = [
+  { number: 1, label: 'Catálogo' },
+  { number: 2, label: 'Envío' },
+  { number: 3, label: 'Pago' },
 ]
 
 const orderUuid = computed(() => route.params.uuid as string | undefined)
 const order = ref<Order | null>(null)
 const isLoading = ref<boolean>(true)
 const isProcessing = ref<boolean>(false)
+
+const isCatalogOrder = computed<boolean>(() => order.value?.kind === 'catalog')
+const stepper = computed(() => (isCatalogOrder.value ? CATALOG_STEPS : STICKER_STEPS))
+const stepperCurrent = computed(() => (isCatalogOrder.value ? 2 : 4))
 
 // === Shipping form state ===
 const recipientName = ref<string>('')
@@ -52,7 +64,25 @@ const thumbnailUrl = computed<string | null>(() => {
   return original?.file ?? null
 })
 
-const totalEur = computed<string>(() => order.value?.total_eur ?? '')
+/**
+ * Display total. For catalog orders the backend's `total_amount_cents` is
+ * 0 until place_order runs (i.e. the moment the customer hits Pagar), so
+ * we derive it client-side from `product_detail.price_cents × product_quantity`
+ * — same math the backend will compute. The backend remains the source of
+ * truth at place_order time; this is purely a UI affordance for the
+ * pre-payment summary so the customer doesn't see €0.00.
+ */
+const totalEur = computed<string>(() => {
+  if (!order.value) return ''
+  if (order.value.total_amount_cents > 0) {
+    return order.value.total_eur
+  }
+  if (order.value.kind === 'catalog' && order.value.product_detail) {
+    const cents = order.value.product_detail.price_cents * order.value.product_quantity
+    return (cents / 100).toFixed(2)
+  }
+  return order.value.total_eur ?? ''
+})
 
 const formIsValid = computed<boolean>(
   () =>
@@ -107,25 +137,29 @@ async function onPay() {
   isProcessing.value = true
   stripeError.value = null
   try {
-    // 1. PATCH the shipping fields onto the order
-    await ordersService.update(orderUuid.value, {
-      recipient_name: recipientName.value,
-      street_line_1: streetLine1.value,
-      street_line_2: streetLine2.value,
-      city: city.value,
-      postal_code: postalCode.value,
-      country: country.value.toUpperCase(),
-    })
-
-    // 2. Transition draft → placed (validates required fields server-side,
-    //    computes the total).
+    // PATCH + place are only allowed while the order is still a draft.
+    // Customers revisiting a placed order (e.g. coming back to pay later)
+    // skip straight to the Stripe step.
     if (order.value?.status === 'draft') {
+      // 1. PATCH the shipping fields onto the order
+      await ordersService.update(orderUuid.value, {
+        recipient_name: recipientName.value,
+        street_line_1: streetLine1.value,
+        street_line_2: streetLine2.value,
+        city: city.value,
+        postal_code: postalCode.value,
+        country: country.value.toUpperCase(),
+      })
+
+      // 2. Transition draft → placed (validates required fields server-side,
+      //    computes the total).
       const placed = await ordersService.place(orderUuid.value)
       order.value = placed
     }
 
     // 3. Create the Stripe PaymentIntent. Returns 502 if the backend lacks
-    //    real Stripe keys — handle gracefully.
+    //    real Stripe keys — handle gracefully. Returns 409 with
+    //    detail=insufficient_stock for catalog orders if stock dropped.
     const checkout = await ordersService.checkout(orderUuid.value)
     clientSecret.value = checkout.client_secret
     paymentIntentId.value = checkout.payment_intent_id
@@ -135,10 +169,26 @@ async function onPay() {
     //    state so the test harness has something to assert on.
   } catch (e) {
     const status = (e as { response?: { status?: number } }).response?.status
-    const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+    const data = (e as { response?: { data?: { detail?: string; message?: string } } }).response?.data
+    const detail = data?.detail
     if (status === 502) {
       stripeError.value =
         'El procesador de pagos aún no está configurado en este entorno. Vuelve más tarde.'
+    } else if (status === 409 && detail === 'insufficient_stock') {
+      // Catalog: stock dropped under us between place and checkout.
+      const message =
+        data?.message ?? 'Este producto se quedó sin stock antes de pagar.'
+      toast.error(message)
+      // Send the customer back to the product page (or catalog if we lack slug)
+      if (order.value?.product_detail?.slug) {
+        router.push({
+          name: 'catalog-detail',
+          params: { slug: order.value.product_detail.slug },
+        })
+      } else {
+        router.push('/catalogo')
+      }
+      return
     } else if (status === 409) {
       stripeError.value =
         detail ?? 'Tu pedido no está en un estado válido para el pago. Volvé al dashboard.'
@@ -151,6 +201,18 @@ async function onPay() {
 }
 
 function onBack() {
+  if (isCatalogOrder.value) {
+    // Catalog: back to the product detail (or catalog if no slug nested).
+    if (order.value?.product_detail?.slug) {
+      router.push({
+        name: 'catalog-detail',
+        params: { slug: order.value.product_detail.slug },
+      })
+    } else {
+      router.push('/catalogo')
+    }
+    return
+  }
   if (orderUuid.value) {
     router.push({ name: 'order-config', params: { uuid: orderUuid.value } })
   } else {
@@ -164,8 +226,8 @@ onMounted(loadOrder)
 <template>
   <section class="mx-auto max-w-7xl px-6 py-10">
     <AppStepper
-      :steps="steps"
-      :current="4"
+      :steps="stepper"
+      :current="stepperCurrent"
       class="mb-10"
     />
 
@@ -268,9 +330,19 @@ onMounted(loadOrder)
         </div>
       </div>
 
-      <!-- RIGHT: read-only summary -->
+      <!-- RIGHT: read-only summary (kind-aware) -->
       <div class="lg:sticky lg:top-24 lg:self-start">
+        <CatalogOrderSummary
+          v-if="isCatalogOrder"
+          :product="order.product_detail"
+          :product-quantity="order.product_quantity"
+          :total-eur="totalEur"
+          :cta-loading="false"
+          :hide-cta="true"
+          @continue="onPay"
+        />
         <OrderSummary
+          v-else
           :material="order.material"
           :width-mm="order.width_mm"
           :height-mm="order.height_mm"

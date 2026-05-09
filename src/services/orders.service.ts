@@ -2,6 +2,7 @@ import api from './api'
 import type { Paginated } from '@/types/api'
 import type {
   CheckoutResponse,
+  CreateCatalogOrderPayload,
   Order,
   OrderUpdatePayload,
   PriceQuoteRequest,
@@ -22,11 +23,29 @@ export const ordersService = {
   },
 
   /**
-   * Creates an empty draft owned by the requesting user. No body needed —
-   * the backend treats `POST /orders/` with `{}` as "give me a fresh draft".
+   * Creates an empty sticker draft owned by the requesting user. No body
+   * needed — the backend treats `POST /orders/` with `{}` as "give me a
+   * fresh sticker draft" (kind defaults to 'sticker' server-side).
    */
   async createDraft(): Promise<Order> {
     const response = await api.post('/orders/', {})
+    return response.data
+  },
+
+  /**
+   * Creates a catalog draft pre-populated with the chosen product + qty.
+   * Customer is redirected to /checkout/{uuid} to fill shipping next.
+   */
+  async createCatalogOrder(payload: {
+    product: string
+    product_quantity: number
+  }): Promise<Order> {
+    const body: CreateCatalogOrderPayload = {
+      kind: 'catalog',
+      product: payload.product,
+      product_quantity: payload.product_quantity,
+    }
+    const response = await api.post('/orders/', body)
     return response.data
   },
 

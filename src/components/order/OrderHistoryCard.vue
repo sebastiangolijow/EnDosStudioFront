@@ -25,6 +25,8 @@ const formattedDate = computed(() => {
   })
 })
 
+const isCatalogOrder = computed<boolean>(() => props.order.kind === 'catalog')
+
 const sizeLabel = computed(() => {
   if (!props.order.width_mm || !props.order.height_mm) return '—'
   return `${props.order.width_mm / 10}×${props.order.height_mm / 10} cm`
@@ -34,10 +36,22 @@ const materialLabel = computed(() =>
   props.order.material ? MATERIAL_LABELS[props.order.material] : '—',
 )
 
+/** Display caption for the second info line: kind-aware. */
+const itemLine = computed(() => {
+  if (isCatalogOrder.value) {
+    const name = props.order.product_detail?.name ?? '—'
+    return `${name} · ${props.order.product_quantity} unidad(es)`
+  }
+  return `${materialLabel.value} · ${sizeLabel.value} · ${props.order.quantity} unidades`
+})
+
 const totalLabel = computed(() => `€${props.order.total_eur || '0.00'}`)
 
-/** First original-image file URL, or null for placeholder. */
+/** Catalog: product image. Sticker: original-upload thumbnail. */
 const thumbnailUrl = computed(() => {
+  if (isCatalogOrder.value) {
+    return props.order.product_detail?.image ?? null
+  }
   const original = props.order.files.find((f) => f.kind === 'original')
   return original?.file ?? null
 })
@@ -85,7 +99,7 @@ function viewDetails() {
         <StatusBadge :status="order.status" />
       </div>
       <p class="mt-1 truncate text-sm text-text-muted">
-        {{ materialLabel }} · {{ sizeLabel }} · {{ order.quantity }} unidades
+        {{ itemLine }}
       </p>
     </div>
 

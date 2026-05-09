@@ -3,7 +3,7 @@
 > **Studio**: YeKo Studio · **Client**: Barcelona print shop selling custom stickers
 > **Stack**: Vue 3 · Vite · TypeScript · Vue Router · Pinia · Tailwind CSS · Axios · Canvas API · OpenCV.js (CDN)
 > **Backend**: separate Django + DRF project at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
-> **Status**: feature-complete for the MVP customer flow as of session 2026-05-03. SPA shipped end-to-end (auth, upload, editor with auto-crop + materials + Forma + halo, order-config, checkout stub). 30/30 functional Playwright specs passing. Editor matches the reference shop's UX (vivid material halo in bleed margin, transparent vinyl preview, geometric shapes pass through editor, background removal). Stripe live keys + email SMTP + first deploy are the operational blockers, not code.
+> **Status**: feature-complete for the MVP customer flow as of session 2026-05-03 + repricing 2026-05-09 + catalog M3a 2026-05-09. SPA shipped end-to-end (auth, upload, editor with auto-crop + materials + Forma + halo, order-config, checkout stub, catalog browse/buy, admin product CRUD). 50/50 functional Playwright specs passing. Editor matches the reference shop's UX (vivid material halo in bleed margin, transparent vinyl preview, geometric shapes pass through editor, background removal). Stripe live keys + email SMTP + first deploy are the operational blockers, not code.
 
 This file is the index for any AI agent working on the StickerApp frontend. Read it before doing anything. It captures the YeKo Studio mindset, the design tokens (locked), the tech-stack decisions, the screen inventory, and the conventions we'll follow.
 
@@ -455,6 +455,7 @@ The single biggest source of frontend ↔ backend bugs in two-repo projects is f
 - **UUIDs are named `uuid`, not `id`.** `Order.uuid`, `OrderFile.uuid`, `User.uuid`. Frontend types must mirror this.
 - **Money is integer cents on the wire** (`total_amount_cents: number`). The serializer also exposes `total_eur: string` ("110.00") for display convenience. Use `total_eur` for rendering; never `total_amount_cents / 100` (float precision loss).
 - **Status enums are snake_case strings**: `"draft"`, `"placed"`, `"paid"`, `"in_production"`, `"shipped"`, `"delivered"`, `"cancelled"`. Translate for display (`"En producción"`) but the wire value stays `"in_production"`.
+- **`Order.kind`** (M3a) discriminates `"sticker"` (M2 default) vs `"catalog"` (new). Catalog orders carry `product` (UUID) + `product_quantity` instead of sticker spec fields. The serializer also returns nested `product_detail` (`name`, `slug`, `image`, `price_cents`, `price_eur`) so the frontend renders the catalog summary without a second fetch. Branch on `order.kind` everywhere kind-specific UI is needed: CheckoutView, ConfirmationView, DashboardView's OrderHistoryCard, AdminOrderDetailView. Sticker views (UploadView, EditorView, OrderConfigView) are sticker-only by definition — catalog orders skip them entirely.
 - **`OrderFile.kind` enum**: `"original"`, `"die_cut_mask"`. Add `"relief_mask"` when the drawn-mask feature ships.
 - **Multipart upload field names are exactly `file` and `kind`**. Anything else is silently dropped.
 
@@ -513,6 +514,72 @@ Frozen detail of the 2026-05-03 session:
 3. **First deploy**. Hosting choice (Vercel / Netlify / self-hosted),
    domain, TLS. CheckoutView's `return_url` for Stripe redirects needs
    to point at the deployed origin.
+
+### Done (Session 2026-05-09 — catalog M3a)
+
+The frontend mirror of the backend's M3a. Catalog products are non-sticker
+SKUs (llaveros etc.) bought as separate Orders with `kind="catalog"` —
+mixed cart deferred to M3b.
+
+**New routes** (in `src/router/index.ts`):
+- Public: `/catalogo` (grid), `/catalogo/:slug` (detail).
+- Staff (`requiresStaff` guard, admin OR shop_staff):
+  `/admin/products`, `/admin/products/new`, `/admin/products/:slug/edit`.
+
+**New views**:
+- `CatalogView.vue` — grid of `ProductCard`s, public, anonymous-OK.
+- `CatalogDetailView.vue` — public detail with qty stepper, anon-Comprar
+  redirects to `/login?next=...`, "Sin stock" badge at qty=0, disables
+  Comprar.
+- `AdminProductsView.vue` — staff table with inline `is_active` toggle +
+  edit links + "+ Nuevo producto".
+- `AdminProductFormView.vue` — dual-mode (create/edit by route param)
+  with image upload + preview. Slug is read-only (auto-generated
+  server-side).
+
+**New components**:
+- `ProductCard.vue` (catalog grid item, with out-of-stock badge).
+- `CatalogOrderSummary.vue` (right-rail summary for catalog orders;
+  used in CheckoutView and is the kind-aware counterpart of the
+  existing sticker `OrderSummary`).
+
+**Modified views**:
+- `CheckoutView.vue` — branches on `order.kind`. Catalog renders
+  `CatalogOrderSummary`; sticker renders the existing `OrderSummary`.
+  Stepper differs by kind (catalog: 3 steps, sticker: 4). 409 with
+  `detail=insufficient_stock` triggers a Spanish toast and routes the
+  customer back to the product detail. PATCH+place_order are skipped
+  if the order is already placed (race-safe revisit).
+- `ConfirmationView.vue` — kind-aware product/material display, "Seguir
+  comprando" CTA for catalog orders (vs "Crear otro pedido" for sticker).
+- `OrderHistoryCard.vue` — catalog orders show product name + qty +
+  product image; sticker unchanged.
+- `HomeView.vue` — added "Ver catálogo" CTA in the hero.
+
+**New service**: `src/services/products.service.ts` (public list/get +
+admin CRUD with multipart image upload). `orders.service.ts` got a
+`createCatalogOrder({product, product_quantity})` method.
+
+**New types**: `src/types/product.ts` (`Product`, `ProductRef`,
+`ProductWritePayload`). `src/types/order.ts` extended with
+`OrderKind`, `Order.product/product_quantity/product_detail`,
+`CreateCatalogOrderPayload`. Sticker spec fields stay required in TS
+to keep the M2 surface untouched (catalog orders just have empty
+defaults at those fields, which is what the backend returns).
+
+**Backend response shape note**: `ProductViewSet.create` and `update`
+override the default to return `ProductSerializer.data` (not
+`ProductWriteSerializer.data`) so the frontend always receives the full
+read shape (uuid + slug + price_eur) from write requests. Matters because
+`AdminProductsView` splices the response in place; without uuid+slug the
+slot's data-testid bindings would go stale.
+
+**5 new Playwright specs**: `catalog-public-browse`, `catalog-buy-flow`,
+`catalog-admin-create`, `catalog-admin-edit`, `catalog-stock-409`.
+Helpers in `tests/e2e/helpers/backend.ts` got `seedProduct` and
+`seedShopStaff`.
+
+**50/50 Playwright specs passing.**
 
 ### Open follow-ups (non-blocking)
 

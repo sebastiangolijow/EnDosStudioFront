@@ -61,9 +61,10 @@ const inspiration = Array.from({ length: 6 }, (_, i) => ({ id: i }))
           <AppButton
             variant="ghost"
             size="lg"
-            @click="router.push('/#how')"
+            data-testid="home-view-catalog"
+            @click="router.push('/catalogo')"
           >
-            Ver cómo funciona →
+            Ver catálogo →
           </AppButton>
         </div>
       </div>
