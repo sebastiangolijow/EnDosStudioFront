@@ -40,6 +40,100 @@ interface FitTransform {
   drawH: number
 }
 
+/**
+ * Trace a closed contour as a smooth curve through `points` on `ctx`.
+ *
+ * For each consecutive pair (p[i], p[i+1]) we draw a quadratic Bézier whose
+ * control point is p[i] and whose end point is the midpoint of (p[i], p[i+1]).
+ * This is one pass of Chaikin's corner-cutting algorithm done at render
+ * time — turning a polygonal contour (sharp lineTo segments visible at
+ * every vertex) into a continuous curve where every former vertex becomes
+ * a smooth tangent transition.
+ *
+ * Hugs the silhouette closely (no inflation), no kinks visible.
+ *
+ * Caller is responsible for `beginPath()`. The function does not call
+ * `closePath()` — `fill()` and `clip()` close implicitly.
+ */
+function traceSmoothClosedCurve(
+  ctx: CanvasRenderingContext2D,
+  points: { x: number; y: number }[],
+) {
+  const n = points.length
+  if (n < 3) {
+    if (n > 0) ctx.moveTo(points[0].x, points[0].y)
+    for (let i = 1; i < n; i++) ctx.lineTo(points[i].x, points[i].y)
+    return
+  }
+  const startMidX = (points[n - 1].x + points[0].x) / 2
+  const startMidY = (points[n - 1].y + points[0].y) / 2
+  ctx.moveTo(startMidX, startMidY)
+  for (let i = 0; i < n; i++) {
+    const cp = points[i]
+    const next = points[(i + 1) % n]
+    const midX = (cp.x + next.x) / 2
+    const midY = (cp.y + next.y) / 2
+    ctx.quadraticCurveTo(cp.x, cp.y, midX, midY)
+  }
+}
+
+/**
+ * Smooth a closed polygon's vertex coordinates by perimeter-blurring.
+ *
+ * For each vertex p[i], replace it with a weighted average of itself and
+ * its 2k neighbors (k on each side), with binomial weights centered on i.
+ * Equivalent to convolving the polygon coordinates with a 1D Gaussian
+ * along the perimeter. Each pass widens the effective kernel; passes
+ * are cheap (O(n·k)) and the visual effect is uniform — small bumps and
+ * wide concavities both smooth at proportional rates.
+ *
+ * Why this and not Chaikin's corner-cutting:
+ *   - Chaikin only rounds at vertices; long edges between sparse vertices
+ *     stay straight regardless of how many iterations you run.
+ *   - Perimeter-blur smooths everywhere along the curve, including across
+ *     concavities. This is what gives the "wavy at max slider" look the
+ *     customer asked for: bumps level out, the silhouette becomes a
+ *     smooth undulation.
+ *
+ * Implementation: rather than a true Gaussian, do `iterations` passes of
+ * a 3-tap [1, 2, 1] / 4 kernel. Multiple passes converge to a Gaussian;
+ * 6 passes ≈ Gaussian with σ ≈ 1.7 vertex-spacings, which is plenty.
+ * (Slider 10 → 6 passes covers the full visual range.)
+ */
+function smoothPolygonPerimeter<T extends { x: number; y: number }>(
+  points: T[],
+  iterations: number,
+): { x: number; y: number }[] {
+  if (iterations <= 0 || points.length < 3) {
+    return points.map((p) => ({ x: p.x, y: p.y }))
+  }
+  let pts: { x: number; y: number }[] = points.map((p) => ({ x: p.x, y: p.y }))
+  const n = pts.length
+  for (let iter = 0; iter < iterations; iter++) {
+    const out: { x: number; y: number }[] = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const prev = pts[(i - 1 + n) % n]
+      const cur = pts[i]
+      const next = pts[(i + 1) % n]
+      out[i] = {
+        x: (prev.x + 2 * cur.x + next.x) / 4,
+        y: (prev.y + 2 * cur.y + next.y) / 4,
+      }
+    }
+    pts = out
+  }
+  return pts
+}
+
+/** Map UI slider value (0–10) to smoothing-pass count (0–25).
+ *  Slider 0 = raw silhouette (no extra smoothing on top of the always-on
+ *  quadratic-curve render). Slider 10 = 25 passes of perimeter-blur,
+ *  which collapses every concavity into a smooth wavy silhouette
+ *  matching the "label shape" the customer pointed at as max. */
+function iterationCountFromSliderValue(slider: number): number {
+  return Math.round((Math.max(0, Math.min(10, slider)) / 10) * 25)
+}
+
 export function useCanvasEditor() {
   // === Refs (template) ===
   const stack = ref<HTMLDivElement | null>(null)
@@ -75,6 +169,12 @@ export function useCanvasEditor() {
    *  holographic is vivid in the margin and barely visible over the
    *  artwork itself. */
   const materialActive = ref(false)
+  /** UI smoothing slider value (0–10). Drives Chaikin iterations applied
+   *  to the polygon before rendering. 0 = raw silhouette (just our
+   *  always-on quadraticCurveTo render). 10 = very wavy, no detail —
+   *  silhouette concavities filled, big smooth bumps. Default 2 = subtle.
+   *  Doesn't re-run OpenCV; pure JS geometry on the saved polygon. */
+  const smoothingSlider = ref<number>(2)
 
   // === Internals (not reactive) ===
   let resizeObserver: ResizeObserver | null = null
@@ -164,14 +264,20 @@ export function useCanvasEditor() {
     const shouldClip = removeBackground.value && clipPoints && clipPoints.length > 0
     if (shouldClip) {
       ctx.save()
-      ctx.beginPath()
-      for (let i = 0; i < clipPoints!.length; i++) {
-        const css = imageToCss(clipPoints![i])
-        if (!css) continue
-        if (i === 0) ctx.moveTo(css.x, css.y)
-        else ctx.lineTo(css.x, css.y)
+      // Smooth the clip path with the same iteration count as the mask
+      // layer, so the clipped artwork edge matches the rendered cut path
+      // exactly (no daylight between them at "sharp" vertices). The
+      // tight `artworkPoints` get smoothed too — preserves the symmetry
+      // between the inner clip and the outer cut polygon.
+      const clipIterations = iterationCountFromSliderValue(smoothingSlider.value)
+      const smoothedClip = smoothPolygonPerimeter(clipPoints!, clipIterations)
+      const cssClip: { x: number; y: number }[] = []
+      for (const p of smoothedClip) {
+        const css = imageToCss({ kind: 'image', x: p.x, y: p.y })
+        if (css) cssClip.push(css)
       }
-      ctx.closePath()
+      ctx.beginPath()
+      traceSmoothClosedCurve(ctx, cssClip)
       ctx.clip()
     }
     // Two opacity tweaks on the base image:
@@ -203,24 +309,33 @@ export function useCanvasEditor() {
 
     if (!maskVisible.value || !maskPoints.value || !fit || maskPoints.value.length === 0) return
 
-    // Trace the polygon in CSS pixels. Track the bounding box at the same
-    // time so a gradient fill can size itself correctly.
+    // Two-stage smoothing:
+    //   1. Perimeter-Gaussian on the silhouette (`smoothPolygonPerimeter`)
+    //      — the "Suavizado" slider drives this. Each pass blurs each
+    //      vertex with its neighbors; multiple passes ≈ Gaussian along
+    //      the perimeter. 0 = raw silhouette; max = no detail, fully wavy.
+    //   2. Always-on quadratic-curve render (`traceSmoothClosedCurve`)
+    //      below, which gives every remaining vertex a smooth tangent.
+    // Both passes are pure geometry; cheap to recompute every frame.
+    const iterations = iterationCountFromSliderValue(smoothingSlider.value)
+    const smoothedImagePoints = smoothPolygonPerimeter(maskPoints.value, iterations)
+    const cssPoints: { x: number; y: number }[] = []
+    for (const p of smoothedImagePoints) {
+      const css = imageToCss({ kind: 'image', x: p.x, y: p.y })
+      if (css) cssPoints.push(css)
+    }
     let minX = Infinity
     let minY = Infinity
     let maxX = -Infinity
     let maxY = -Infinity
-    ctx.beginPath()
-    for (let i = 0; i < maskPoints.value.length; i++) {
-      const css = imageToCss(maskPoints.value[i])
-      if (!css) continue
-      if (css.x < minX) minX = css.x
-      if (css.y < minY) minY = css.y
-      if (css.x > maxX) maxX = css.x
-      if (css.y > maxY) maxY = css.y
-      if (i === 0) ctx.moveTo(css.x, css.y)
-      else ctx.lineTo(css.x, css.y)
+    for (const p of cssPoints) {
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x
+      if (p.y > maxY) maxY = p.y
     }
-    ctx.closePath()
+    ctx.beginPath()
+    traceSmoothClosedCurve(ctx, cssPoints)
 
     // Resolve fill. palette.fill can be:
     //   - a flat CSS string (default brand orange, simple metallic)
@@ -398,6 +513,16 @@ export function useCanvasEditor() {
     drawBaseLayer()
   }
 
+  /** Set the UI smoothing slider value (0–10). Re-renders the mask layer
+   *  and (if removeBackground is on) the base layer's clip mask. Does NOT
+   *  re-run OpenCV — the polygon stays the same; only the geometric
+   *  smoothing applied at render time changes. */
+  function setSmoothingSlider(value: number): void {
+    smoothingSlider.value = Math.max(0, Math.min(10, value))
+    drawMaskLayer()
+    if (removeBackground.value) drawBaseLayer()
+  }
+
   /**
    * Render the mask polygon to a Blob at IMAGE-NATURAL resolution, suitable
    * for upload as the `die_cut_mask` OrderFile. The file is opaque-black
@@ -414,13 +539,16 @@ export function useCanvasEditor() {
     if (!ctx) throw new Error('No 2D context on OffscreenCanvas')
 
     ctx.clearRect(0, 0, naturalWidth, naturalHeight)
+    // Same smoothing pipeline as the on-screen mask, so the uploaded
+    // die-cut mask matches exactly what the customer saw. The shop's
+    // cutter cuts the smoothed shape, not the raw silhouette.
+    const exportIterations = iterationCountFromSliderValue(smoothingSlider.value)
+    const smoothedExport = smoothPolygonPerimeter(maskPoints.value, exportIterations)
     ctx.beginPath()
-    for (let i = 0; i < maskPoints.value.length; i++) {
-      const p = maskPoints.value[i]
-      if (i === 0) ctx.moveTo(p.x, p.y)
-      else ctx.lineTo(p.x, p.y)
-    }
-    ctx.closePath()
+    traceSmoothClosedCurve(
+      ctx as unknown as CanvasRenderingContext2D,
+      smoothedExport,
+    )
     ctx.fillStyle = '#000000'
     ctx.fill()
 
@@ -475,6 +603,7 @@ export function useCanvasEditor() {
     image,
     maskPoints,
     maskVisible,
+    smoothingSlider,
     // event handlers (template)
     onPointerDown,
     onPointerMove,
@@ -488,6 +617,7 @@ export function useCanvasEditor() {
     setRemoveBackground,
     setTransparentMaterial,
     setMaterialActive,
+    setSmoothingSlider,
     getMaskAsBlob,
     reset,
   }

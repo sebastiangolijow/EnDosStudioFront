@@ -38,10 +38,16 @@ const cropOptions = ref<AutoCropOptions>({
   cannyLow: 50,
   cannyHigh: 150,
   blurRadius: 5,
-  polyEpsilon: 2,
+  polyEpsilon: 1.5,
   marginMm: 15, // default bleed margin (typical sticker-print convention)
 })
 const maskVisible = ref<boolean>(true)
+// Cut-line smoothing slider value (0–10). Default 2 = subtle smoothing
+// on top of the always-on quadratic-curve render. Persisted only in
+// editor session state for now — the customer's choice doesn't ride
+// to the backend (the printed mask matches whatever's on screen, so
+// the cutter sees the smoothed shape via the uploaded die_cut_mask PNG).
+const smoothingSlider = ref<number>(2)
 // Show the artwork against the canvas's checker background instead of its
 // original (likely white) background. Matches the reference shop's UX —
 // once a cut polygon exists, the customer sees what the printed sticker
@@ -293,6 +299,7 @@ watch(cropOptions, () => {
 
 watch(maskVisible, (v) => canvasRef.value?.setMaskVisible(v))
 watch(removeBackground, (v) => canvasRef.value?.setRemoveBackground(v))
+watch(smoothingSlider, (v) => canvasRef.value?.setSmoothingSlider(v))
 
 // === Material + relief: persist to draft, repaint halo ===
 
@@ -601,6 +608,7 @@ onMounted(bootstrapEditor)
         :shape="shape"
         :with-relief="withRelief"
         :relief-note="reliefNote"
+        :smoothing="smoothingSlider"
         @update:mask-visible="maskVisible = $event"
         @update:remove-background="removeBackground = $event"
         @update:options="cropOptions = $event"
@@ -608,6 +616,7 @@ onMounted(bootstrapEditor)
         @update:shape="shape = $event"
         @update:with-relief="withRelief = $event"
         @update:relief-note="reliefNote = $event"
+        @update:smoothing="smoothingSlider = $event"
       />
     </div>
 

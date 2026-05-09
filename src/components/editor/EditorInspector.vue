@@ -18,6 +18,10 @@ interface Props {
   withRelief: boolean
   /** Free-text note describing where relief should go. Shown when withRelief. */
   reliefNote: string
+  /** Cut-line smoothing slider (0–10). Drives Chaikin iterations on the
+   *  rendered polygon. 0 = follow silhouette tightly; 10 = very wavy,
+   *  no detail. v-model:smoothing. Updates instantly (no auto-crop re-run). */
+  smoothing: number
 }
 
 defineProps<Props>()
@@ -30,6 +34,7 @@ defineEmits<{
   'update:shape': [value: Shape]
   'update:withRelief': [value: boolean]
   'update:reliefNote': [value: string]
+  'update:smoothing': [value: number]
 }>()
 
 const SHAPES: Shape[] = ['contorneado', 'cuadrado', 'circulo', 'redondeadas']
@@ -279,7 +284,7 @@ const SWATCH_CLASSES: Record<Material, string> = {
     <hr class="border-border">
 
     <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
-      Margen
+      Margen y forma
     </h2>
 
     <!-- Bleed margin (mm) — outward offset around the auto-detected
@@ -300,6 +305,30 @@ const SWATCH_CLASSES: Record<Material, string> = {
         data-testid="slider-margin-mm"
         @input="$emit('update:options', { ...options, marginMm: Number(($event.target as HTMLInputElement).value) })"
       >
+    </div>
+
+    <!-- Cut-line smoothing — Chaikin iterations on the rendered polygon.
+         Updates instantly without re-running OpenCV. 0 follows the
+         silhouette tightly (every fur tuft visible); 10 is fully wavy
+         (concavities filled, big smooth bumps). -->
+    <div>
+      <div class="mb-1 flex items-baseline justify-between gap-2">
+        <label class="text-sm text-text">Suavizado</label>
+        <span class="text-xs text-text-muted">{{ smoothing }}</span>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="10"
+        step="1"
+        :value="smoothing"
+        class="w-full accent-primary"
+        data-testid="slider-smoothing"
+        @input="$emit('update:smoothing', Number(($event.target as HTMLInputElement).value))"
+      >
+      <p class="mt-1 text-xs text-text-muted">
+        0 sigue cada detalle del diseño · 10 más onda y sin detalles.
+      </p>
     </div>
 
     <hr class="border-border">
@@ -344,10 +373,11 @@ const SWATCH_CLASSES: Record<Material, string> = {
       >
     </div>
 
-    <!-- Blur radius -->
+    <!-- Blur radius (Canny pre-blur). Renamed to "Borrosidad" so it doesn't
+         collide with the user-facing "Suavizado" slider in Margen y forma. -->
     <div>
       <div class="mb-1 flex items-baseline justify-between gap-2">
-        <label class="text-sm text-text">Suavizado</label>
+        <label class="text-sm text-text">Borrosidad de bordes</label>
         <span class="text-xs text-text-muted">{{ options.blurRadius ?? 5 }} px</span>
       </div>
       <input
@@ -359,24 +389,6 @@ const SWATCH_CLASSES: Record<Material, string> = {
         class="w-full accent-primary"
         data-testid="slider-blur"
         @input="$emit('update:options', { ...options, blurRadius: Number(($event.target as HTMLInputElement).value) })"
-      >
-    </div>
-
-    <!-- Polygon epsilon -->
-    <div>
-      <div class="mb-1 flex items-baseline justify-between gap-2">
-        <label class="text-sm text-text">Simplificación</label>
-        <span class="text-xs text-text-muted">{{ options.polyEpsilon ?? 2 }}</span>
-      </div>
-      <input
-        type="range"
-        min="0.5"
-        max="10"
-        step="0.5"
-        :value="options.polyEpsilon ?? 2"
-        class="w-full accent-primary"
-        data-testid="slider-epsilon"
-        @input="$emit('update:options', { ...options, polyEpsilon: Number(($event.target as HTMLInputElement).value) })"
       >
     </div>
 

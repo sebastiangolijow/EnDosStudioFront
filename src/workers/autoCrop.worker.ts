@@ -105,6 +105,7 @@ interface OpenCv {
   BORDER_DEFAULT: number
   RETR_EXTERNAL: number
   CHAIN_APPROX_SIMPLE: number
+  CHAIN_APPROX_NONE: number
   CV_8UC1: number
   CV_8UC3: number
   CV_32FC3: number
@@ -206,6 +207,69 @@ function post(msg: OutgoingMessage) {
   ;(self as unknown as Worker).postMessage(msg)
 }
 
+/**
+ * Offset a closed polygon outward by `distance` (in the same units as the
+ * polygon points). Each vertex is moved along the local outward normal
+ * computed from its neighboring vertices' edge bisector.
+ *
+ * Why this exists (and not cv.dilate):
+ *   - Mask dilation by N px is the Minkowski sum of the silhouette with
+ *     a disk of radius N. For irregular silhouettes (fur, hair), all
+ *     concavities narrower than 2N collapse — the result loses detail
+ *     and looks like a rounded blob. NOT what we want.
+ *   - Per-vertex offset preserves every concavity. The cut path follows
+ *     the silhouette's shape exactly, just N pixels outward. The
+ *     customer sees fur tufts, ear curves, and so on, all preserved
+ *     at any margin.
+ *
+ * Caveats:
+ *   - Sharp concavities can cause neighboring offset points to cross
+ *     ("self-intersection"). We don't cleanly resolve these; the
+ *     render-time smoothing pass papers over the visual artifact.
+ *     For a print-perfect cutter file, a proper polygon-offset
+ *     library (Clipper2) would be needed; M3a tolerates the rough
+ *     edges in exchange for keeping the worker dependency-free.
+ *
+ * Winding assumption: OpenCV's findContours with RETR_EXTERNAL returns
+ * outer contours in CLOCKWISE order under image coordinates (Y-down).
+ * Outward normal of an edge from p[i-1] to p[i+1] (image-Y-down,
+ * clockwise polygon) is the LEFT-perpendicular of the edge vector,
+ * i.e. rotate 90° counterclockwise in screen-space:
+ *     edge = (dx, dy)  →  normal = (-dy, dx)  [length |edge|]
+ * We use the bisector (neighbor-to-neighbor edge) instead of single-edge
+ * normals so the offset varies smoothly between vertices.
+ */
+function offsetPolygonOutward(
+  points: ImagePoint[],
+  distance: number,
+): ImagePoint[] {
+  const n = points.length
+  if (n < 3 || distance <= 0) {
+    return points.map((p) => ({ kind: 'image', x: p.x, y: p.y }))
+  }
+  const out: ImagePoint[] = new Array(n)
+  for (let i = 0; i < n; i++) {
+    const prev = points[(i - 1 + n) % n]
+    const next = points[(i + 1) % n]
+    const dx = next.x - prev.x
+    const dy = next.y - prev.y
+    const len = Math.hypot(dx, dy)
+    if (len === 0) {
+      out[i] = { kind: 'image', x: points[i].x, y: points[i].y }
+      continue
+    }
+    // Outward normal under clockwise winding + Y-down: rotate 90° CCW.
+    const nx = -dy / len
+    const ny = dx / len
+    out[i] = {
+      kind: 'image',
+      x: points[i].x + nx * distance,
+      y: points[i].y + ny * distance,
+    }
+  }
+  return out
+}
+
 // === Pre-pass: scan ImageData on JS side ===
 //
 // Two cheap inspections on the raw RGBA bytes drive strategy selection:
@@ -294,20 +358,24 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     const cannyLow = options.cannyLow ?? 50
     const cannyHigh = options.cannyHigh ?? 150
     const blurRadius = options.blurRadius ?? 5
-    const polyEpsilon = options.polyEpsilon ?? 2
+    // Lower epsilon = more polygon vertices = smoother curve render. The
+    // canvas-layer renderer (useCanvasEditor.drawMaskLayer) draws the
+    // path as quadratic curves through midpoints, so vertex density is
+    // what controls visual smoothness. 1.5 px keeps ~100-300 points
+    // around a typical silhouette — plenty for buttery curves without
+    // bloating the postMessage payload.
+    const polyEpsilon = options.polyEpsilon ?? 1.5
     const marginMm = options.marginMm ?? 15
     const kernel = blurRadius % 2 === 0 ? blurRadius + 1 : blurRadius
 
-    // Working-space scale: the dilation kernel is sized in *working* pixels,
-    // not natural pixels. Convert mm → natural-px → working-px so a 15 mm
-    // margin survives the resolution change consistently.
+    // Working-space scale: image-natural-px ↔ working-px. The bleed margin
+    // is applied as a per-vertex offset along the contour normal (post-
+    // contour-extract), so we don't need to size any kernels in working
+    // pixels — just compute the offset distance in image-natural pixels.
     const scaleX = naturalWidth / workingWidth
     const scaleY = naturalHeight / workingHeight
-    const naturalToWorking = 1 / Math.max(scaleX, scaleY)
-    const dilateRadiusWorking =
-      pxPerMm != null && marginMm > 0
-        ? Math.max(0, Math.round(marginMm * pxPerMm * naturalToWorking))
-        : 0
+    const marginNaturalPx =
+      pxPerMm != null && marginMm > 0 ? marginMm * pxPerMm : 0
 
     // Pre-pass on the raw ImageData (no OpenCV needed).
     const inspection = inspectImage(imageData.data, workingWidth, workingHeight)
@@ -318,8 +386,9 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     const edges = new cv.Mat()
     const rawContours = new cv.MatVector()
     const hierarchy1 = new cv.Mat()
-    // Filled-mask path (used to dilate by N px and re-extract the outer
-    // boundary). approxPolyDP at the end smooths the dilated shape.
+    // Filled silhouette mask. The contour extracted from this is the
+    // tight artwork outline; the cut path is generated by offsetting
+    // the contour points outward (see offsetPolygonOutward below).
     const filled = cv.Mat.zeros(workingHeight, workingWidth, cv.CV_8UC1)
     // Buffers for color-distance / threshold paths.
     const rgb = new cv.Mat()
@@ -333,17 +402,12 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
     // visibly distorting the silhouette.
     const morphKernelSmall = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5))
     const morphKernelWide = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(15, 15))
-    let kernelMat: MatLike | null = null
-    const dilated = new cv.Mat()
-    const dilatedContours = new cv.MatVector()
-    const hierarchy2 = new cv.Mat()
-    const approx = new cv.Mat()
-    // Tight (pre-dilate) contour — the artwork silhouette without bleed.
-    // The main thread uses it as a clip mask so the halo shows in the
-    // bleed margin without the photo's white background occluding it.
+    // Tight contour — the artwork silhouette. The main thread uses it as
+    // a clip mask so the halo shows in the bleed margin without the
+    // photo's white background occluding it. Source for both the tight
+    // (artworkPoints) and the offset (cut path) polygons.
     const tightContours = new cv.MatVector()
     const hierarchyTight = new cv.Mat()
-    const tightApprox = new cv.Mat()
 
     try {
       const totalPixels = workingWidth * workingHeight
@@ -505,117 +569,73 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       // Telemetry — useful in browser devtools when debugging a problem image.
       console.info(`[autocrop] strategy=${strategyUsed} hasAlpha=${inspection.hasAlpha} bgStdDev=${inspection.bgStdDev.toFixed(1)}`)
 
-      // Extract the tight artwork contour BEFORE dilating. We approxPolyDP
-      // it down to keep the postMessage payload small. The main thread
-      // uses it to clip the base layer, exposing the halo in the bleed
-      // area without the photo's background interfering.
-      const tightArtworkPoints: ImagePoint[] = []
-      try {
-        cv.findContours(
-          filled,
-          tightContours,
-          hierarchyTight,
-          cv.RETR_EXTERNAL,
-          cv.CHAIN_APPROX_SIMPLE,
-        )
-        if (tightContours.size() > 0) {
-          // Pick the largest tight contour. We could union them all, but
-          // a single envelope is fine for clip-masking — even multi-piece
-          // artwork will have a "main" piece that the customer cares about.
-          let tIdx = 0
-          let tArea = -1
-          for (let i = 0; i < tightContours.size(); i++) {
-            const a = cv.contourArea(tightContours.get(i))
-            if (a > tArea) {
-              tArea = a
-              tIdx = i
-            }
-          }
-          cv.approxPolyDP(tightContours.get(tIdx), tightApprox, polyEpsilon, true)
-          for (let i = 0; i < tightApprox.rows; i++) {
-            tightArtworkPoints.push({
-              kind: 'image',
-              x: tightApprox.intAt(i, 0) * scaleX,
-              y: tightApprox.intAt(i, 1) * scaleY,
-            })
-          }
-        }
-      } catch {
-        // Tight contour is a nice-to-have; bleed polygon is the source of
-        // truth. Continue if extraction fails.
-      }
-
-      let sourceMaskForExtract: MatLike = filled
-      if (dilateRadiusWorking > 0) {
-        // Cap the kernel at 21×21 (radius 10) and iterate. A single huge
-        // kernel like 307×307 stalls OpenCV.js for tens of seconds in WASM
-        // — every pixel does kSize² comparisons. Iterating a small ellipse
-        // N times is mathematically equivalent (Minkowski sum of disks ≈
-        // disk of radius N·r) and orders of magnitude faster: ~N·21² ops
-        // per pixel instead of (2r+1)². Caps total iterations so a runaway
-        // marginMm or pxPerMm can't lock the worker.
-        const STEP_RADIUS = 10
-        const MAX_ITERATIONS = 20
-        const stepKSize = STEP_RADIUS * 2 + 1
-        const iterations = Math.min(
-          MAX_ITERATIONS,
-          Math.max(1, Math.round(dilateRadiusWorking / STEP_RADIUS)),
-        )
-        kernelMat = cv.getStructuringElement(
-          cv.MORPH_ELLIPSE,
-          new cv.Size(stepKSize, stepKSize),
-        )
-        cv.dilate(filled, dilated, kernelMat, { x: -1, y: -1 }, iterations)
-        sourceMaskForExtract = dilated
-      }
-
+      // Extract the tight artwork contour at FULL density (CHAIN_APPROX_NONE
+      // returns every boundary pixel). This gives 200-2000+ points around
+      // a typical silhouette — the main thread uses these for both the
+      // tight clip mask AND as the source for the offset bleed polygon.
+      // approxPolyDP with a small epsilon downsamples just enough to keep
+      // the postMessage payload reasonable (~150-400 points) without
+      // collapsing concavities.
       cv.findContours(
-        sourceMaskForExtract,
-        dilatedContours,
-        hierarchy2,
+        filled,
+        tightContours,
+        hierarchyTight,
         cv.RETR_EXTERNAL,
-        cv.CHAIN_APPROX_SIMPLE,
+        cv.CHAIN_APPROX_NONE,
       )
 
-      if (dilatedContours.size() === 0) {
+      if (tightContours.size() === 0) {
         post({ kind: 'result', requestId, result: { kind: 'no-contour-found' } })
         return
       }
 
-      // After dilation there should be a single outer contour, but in case
-      // the dilation merges multiple shapes pick the largest again.
-      let outIdx = 0
-      let outArea = -1
-      for (let i = 0; i < dilatedContours.size(); i++) {
-        const a = cv.contourArea(dilatedContours.get(i))
-        if (a > outArea) {
-          outArea = a
-          outIdx = i
+      // Pick the largest tight contour. Multi-piece artwork: this is the
+      // "main" piece. (We accept that a tiny disconnected piece won't be
+      // included in the cut path; M3a doesn't try to handle multi-piece.)
+      let tIdx = 0
+      let tArea = -1
+      for (let i = 0; i < tightContours.size(); i++) {
+        const a = cv.contourArea(tightContours.get(i))
+        if (a > tArea) {
+          tArea = a
+          tIdx = i
         }
       }
+      const rawTight = new cv.Mat()
+      try {
+        cv.approxPolyDP(tightContours.get(tIdx), rawTight, polyEpsilon, true)
+        const tightPoints: ImagePoint[] = []
+        for (let i = 0; i < rawTight.rows; i++) {
+          tightPoints.push({
+            kind: 'image',
+            x: rawTight.intAt(i, 0) * scaleX,
+            y: rawTight.intAt(i, 1) * scaleY,
+          })
+        }
 
-      cv.approxPolyDP(dilatedContours.get(outIdx), approx, polyEpsilon, true)
+        // Build the cut polygon by offsetting each vertex along the
+        // outward normal by `marginNaturalPx`. Pure geometry — no mask
+        // dilation, so concavities (between fur tufts, ear curves, etc.)
+        // are PRESERVED. This is what the customer wants: the cut line
+        // follows the silhouette's general shape, just pushed outward.
+        const cutPoints: ImagePoint[] =
+          marginNaturalPx > 0
+            ? offsetPolygonOutward(tightPoints, marginNaturalPx)
+            : tightPoints.map((p) => ({ kind: 'image', x: p.x, y: p.y }))
 
-      // Map working-pixel polygon points back to image-natural coordinates.
-      const points: ImagePoint[] = []
-      for (let i = 0; i < approx.rows; i++) {
-        points.push({
-          kind: 'image',
-          x: approx.intAt(i, 0) * scaleX,
-          y: approx.intAt(i, 1) * scaleY,
+        post({
+          kind: 'result',
+          requestId,
+          result: {
+            kind: 'ok',
+            points: cutPoints,
+            areaPx: tArea * scaleX * scaleY,
+            artworkPoints: tightPoints.length >= 3 ? tightPoints : undefined,
+          },
         })
+      } finally {
+        rawTight.delete()
       }
-
-      post({
-        kind: 'result',
-        requestId,
-        result: {
-          kind: 'ok',
-          points,
-          areaPx: outArea * scaleX * scaleY,
-          artworkPoints: tightArtworkPoints.length >= 3 ? tightArtworkPoints : undefined,
-        },
-      })
     } finally {
       src.delete()
       gray.delete()
@@ -630,14 +650,8 @@ async function handleAutoCrop(req: Extract<IncomingMessage, { kind: 'auto-crop' 
       colorMask.delete()
       morphKernelSmall.delete()
       morphKernelWide.delete()
-      kernelMat?.delete()
-      dilated.delete()
-      dilatedContours.delete()
-      hierarchy2.delete()
-      approx.delete()
       tightContours.delete()
       hierarchyTight.delete()
-      tightApprox.delete()
     }
   } catch (e) {
     post({

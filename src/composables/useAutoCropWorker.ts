@@ -28,6 +28,9 @@ export interface AutoCropOptions {
   cannyLow?: number
   cannyHigh?: number
   blurRadius?: number
+  /** approxPolyDP epsilon. Internal — controls vertex density of the
+   *  returned polygon. Lower = more points = smoother render. Not a UI
+   *  lever (the canvas renders the polygon as a smooth curve). Default 1.5. */
   polyEpsilon?: number
   /** Outward bleed margin around the contour, in mm. Default 15. */
   marginMm?: number

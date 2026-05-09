@@ -26,6 +26,7 @@ const {
   setRemoveBackground,
   setTransparentMaterial,
   setMaterialActive,
+  setSmoothingSlider,
   getMaskAsBlob,
   reset,
 } = useCanvasEditor()
@@ -45,6 +46,7 @@ defineExpose({
   setRemoveBackground: (enabled: boolean) => setRemoveBackground(enabled),
   setTransparentMaterial: (enabled: boolean) => setTransparentMaterial(enabled),
   setMaterialActive: (active: boolean) => setMaterialActive(active),
+  setSmoothingSlider: (value: number) => setSmoothingSlider(value),
   getMaskAsBlob: () => getMaskAsBlob(),
   reset: () => reset(),
   hasImage: () => !!image.value,

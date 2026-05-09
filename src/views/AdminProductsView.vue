@@ -38,6 +38,28 @@ async function toggleActive(product: Product) {
   }
 }
 
+async function deleteProduct(product: Product) {
+  // Native confirm is good enough for an admin-only action. Replace with
+  // <AppModal> later if the staff workflow needs richer confirmation
+  // (e.g. type product name to confirm).
+  const confirmed = window.confirm(
+    `¿Eliminar "${product.name}" del catálogo? Esta acción no se puede deshacer.`,
+  )
+  if (!confirmed) return
+  try {
+    await productsService.adminDelete(product.slug)
+    products.value = products.value.filter((p) => p.uuid !== product.uuid)
+    toast.info(`"${product.name}" eliminado.`)
+  } catch (e) {
+    // Backend returns 409 with a friendly hint if the product has any
+    // attached orders (PROTECT FK). Surface that message verbatim so the
+    // shop owner knows to use is_active=false instead.
+    const detail =
+      (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+    toast.error(detail ?? 'No pudimos eliminar el producto.')
+  }
+}
+
 function priceEur(cents: number): string {
   return (cents / 100).toFixed(2)
 }
@@ -49,7 +71,7 @@ onMounted(load)
   <section class="mx-auto max-w-7xl px-6 py-12">
     <header class="mb-8 flex items-end justify-between gap-6">
       <div>
-        <h1 class="text-h1 font-bold uppercase tracking-tight text-text">
+        <h1 class="text-h1 font-bold uppercase tracking-tight text-primary">
           Productos
         </h1>
         <p class="mt-2 text-text-muted">
@@ -162,15 +184,25 @@ onMounted(load)
                 {{ product.is_active ? 'Activo' : 'Oculto' }}
               </button>
             </td>
-            <td class="px-4 py-3 text-right">
-              <AppButton
-                size="sm"
-                variant="ghost"
-                :data-testid="`admin-product-edit-${product.slug}`"
-                @click="router.push({ name: 'admin-product-edit', params: { slug: product.slug } })"
-              >
-                Editar
-              </AppButton>
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-end gap-2">
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  :data-testid="`admin-product-edit-${product.slug}`"
+                  @click="router.push({ name: 'admin-product-edit', params: { slug: product.slug } })"
+                >
+                  Editar
+                </AppButton>
+                <button
+                  type="button"
+                  class="rounded-md border border-transparent px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10"
+                  :data-testid="`admin-product-delete-${product.slug}`"
+                  @click="deleteProduct(product)"
+                >
+                  Borrar
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
