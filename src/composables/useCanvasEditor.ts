@@ -82,8 +82,12 @@ function traceSmoothClosedCurve(
  *  Slider 0 = raw silhouette (no extra smoothing on top of the always-on
  *  quadratic-curve render). Slider 10 = 25 passes of perimeter-blur,
  *  which collapses every concavity into a smooth wavy silhouette
- *  matching the "label shape" the customer pointed at as max. */
-function iterationCountFromSliderValue(slider: number): number {
+ *  matching the "label shape" the customer pointed at as max.
+ *
+ *  Exported so the WebGL FX layer can apply the EXACT same smoothing
+ *  to its stencil polygons — without that, the FX boundary visibly
+ *  diverges from the base canvas's clipped artwork edge. */
+export function iterationCountFromSliderValue(slider: number): number {
   return Math.round((Math.max(0, Math.min(10, slider)) / 10) * 25)
 }
 
@@ -137,6 +141,12 @@ export function useCanvasEditor() {
   let resizeObserver: ResizeObserver | null = null
   let pendingFrame = 0
   let fit: FitTransform | null = null
+  /** Reactive mirror of `fit` — exposed so consumers (the holographic FX
+   *  layer, etc.) can react to layout changes. We can't make `fit` itself
+   *  a ref because it's read 100x per draw; updating a ref every recompute
+   *  would trigger watchers we don't want. Instead, recomputeFit writes
+   *  to both. */
+  const fitRef = shallowRef<FitTransform | null>(null)
 
   // === Geometry ===
 
@@ -161,6 +171,7 @@ export function useCanvasEditor() {
       offsetX: (canvasCssWidth - drawW) / 2,
       offsetY: (canvasCssHeight - drawH) / 2,
     }
+    fitRef.value = fit
   }
 
   function imageToCss(p: ImagePoint): { x: number; y: number } | null {
@@ -203,50 +214,11 @@ export function useCanvasEditor() {
 
   // === Per-layer drawing ===
 
-  /**
-   * Paint an iridescent diagonal-band overlay on top of the already-
-   * drawn artwork. Caller is responsible for `ctx.save()` + `clip()`
-   * before invoking and `restore()` after — we paint into the active
-   * clip region so the overlay only touches artwork pixels.
-   *
-   * Implementation: diagonal multi-stop linear gradient + `screen`
-   * blend mode + ~28% alpha. The screen op brightens highlights and
-   * tints them (cyan / purple / pink / gold / green stops match the
-   * reference shop's holographic vinyl) without darkening shadows.
-   *
-   * The gradient diagonal runs from the image's top-left to its
-   * bottom-right, so the bands track the actual sticker rather than
-   * the canvas viewport — moving the camera doesn't shift the
-   * highlights.
-   */
-  function drawHolographicOverlay(
-    ctx: CanvasRenderingContext2D,
-    fitT: FitTransform,
-  ): void {
-    const x0 = fitT.offsetX
-    const y0 = fitT.offsetY
-    const x1 = fitT.offsetX + fitT.drawW
-    const y1 = fitT.offsetY + fitT.drawH
-
-    const grad = ctx.createLinearGradient(x0, y0, x1, y1)
-    // Five-stop iridescent — cyan → purple → pink → gold → light green.
-    // Same color palette the bundled holographic.png texture uses, so
-    // the artwork shimmer reads as the same material as the bleed halo.
-    grad.addColorStop(0.0, 'rgba(34, 211, 238, 1)')   // cyan
-    grad.addColorStop(0.28, 'rgba(168, 85, 247, 1)')  // violet
-    grad.addColorStop(0.5, 'rgba(244, 114, 182, 1)')  // pink
-    grad.addColorStop(0.72, 'rgba(250, 204, 21, 1)')  // gold
-    grad.addColorStop(1.0, 'rgba(163, 230, 53, 1)')   // lime
-
-    const priorAlpha = ctx.globalAlpha
-    const priorOp = ctx.globalCompositeOperation
-    ctx.globalAlpha = priorAlpha * 0.28
-    ctx.globalCompositeOperation = 'screen'
-    ctx.fillStyle = grad
-    ctx.fillRect(x0, y0, fitT.drawW, fitT.drawH)
-    ctx.globalCompositeOperation = priorOp
-    ctx.globalAlpha = priorAlpha
-  }
+  // (Holographic shimmer used to live here as a 2D screen-blend gradient.
+  // It's now rendered by the WebGL FX layer — see useHolographicFX.ts —
+  // which produces a richer animated effect with proper iridescence and
+  // mouse-responsive highlights. The base layer's only job is the
+  // artwork pixels.)
 
   function drawBaseLayer() {
     const canvas = baseCanvas.value
@@ -309,20 +281,6 @@ export function useCanvasEditor() {
     }
     ctx.drawImage(image.value.source, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
     ctx.globalAlpha = priorAlpha
-
-    // Holographic overlay: diagonal iridescent bands on top of the
-    // artwork. Painted while we're still inside the clip path (so it
-    // hugs the artwork, not the bleed margin). Skipped for non-
-    // holographic materials and for transparent vinyl (where the
-    // checker pattern is already the dominant visual).
-    if (
-      shouldClip &&
-      !transparentMaterial.value &&
-      isHolographicMaterial.value &&
-      fit
-    ) {
-      drawHolographicOverlay(ctx, fit)
-    }
 
     if (shouldClip) ctx.restore()
   }
@@ -643,8 +601,14 @@ export function useCanvasEditor() {
     // reactive state (read-only outside)
     image,
     maskPoints,
+    artworkPoints,
     maskVisible,
     smoothingSlider,
+    // Reactive layout transform (image-natural-px → CSS-px). Kept in sync
+    // with the closure-local `fit` so consumers (holographic FX) can
+    // watch for resize / load and rebuild dependent textures.
+    fit: fitRef,
+    isHolographicMaterial,
     // event handlers (template)
     onPointerDown,
     onPointerMove,

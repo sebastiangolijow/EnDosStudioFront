@@ -287,7 +287,12 @@ const SMART_CUT_DEFAULT_MARGIN_MM = 15
 const originalImageSrc = ref<string | null>(null)
 
 const hasOriginalFile = computed<boolean>(
-  () => order.value?.files.some((f) => f.kind === 'original') ?? false,
+  // Optional-chain `files` too: there's a brief reactivity gap during
+  // smart-cut where order.value is set but order.value.files might be
+  // undefined (the response splice fires before Vue patches the array).
+  // Without this guard, `.some` blows up and Vue surfaces it as a hard
+  // "Unhandled error during execution of component update" toast.
+  () => order.value?.files?.some((f) => f.kind === 'original') ?? false,
 )
 
 /**
