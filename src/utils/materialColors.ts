@@ -68,6 +68,48 @@ export const MATERIAL_TEXTURE_URLS: Partial<Record<Material, string>> = {
   // pattern indicating "no fondo", not a brushed material.
 }
 
+/**
+ * Per-material MACRO reference textures — high-quality AI-generated PNGs
+ * showing the physical surface detail of each premium material (foil dot
+ * grain, paper fiber, glow particles). Sampled by the WebGL FX shader as
+ * a multiply layer on top of its procedural color gradient — gives the
+ * shimmer a "real photographed material" feel without runtime AI cost.
+ *
+ * Generation prompts: `docs/material-textures-prompts.md`.
+ *
+ * Loaded via `import.meta.glob` so missing files don't break the build.
+ * Drop a `<material>_macro.png` into `src/assets/textures/` and it's
+ * automatically wired up next reload — no code changes needed.
+ *
+ * `eager: true` resolves URLs at bundle time (matches the static `?url`
+ * imports above); `query: '?url'` returns the asset URL string instead
+ * of importing the module body.
+ *
+ * The cast is safe: the glob keys are string filenames, not Material
+ * enum values; we look them up by suffix below.
+ */
+const macroGlob = import.meta.glob('@/assets/textures/*_macro.png', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>
+
+function macroUrlFor(material: Material): string | null {
+  // Match `…/<material>_macro.png` regardless of the leading path.
+  const suffix = `${material}_macro.png`
+  for (const [path, url] of Object.entries(macroGlob)) {
+    if (path.endsWith(suffix)) return url
+  }
+  return null
+}
+
+export const MATERIAL_MACRO_URLS: Partial<Record<Material, string | null>> = {
+  holografico: macroUrlFor('holografico'),
+  holografico_transparente: macroUrlFor('holografico_transparente'),
+  eggshell_holografico: macroUrlFor('eggshell_holografico'),
+  luminiscente: macroUrlFor('luminiscente'),
+}
+
 // === Texture loader cache ===
 
 const textureCache = new Map<Material, HTMLImageElement>()

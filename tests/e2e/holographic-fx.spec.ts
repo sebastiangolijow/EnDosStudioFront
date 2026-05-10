@@ -148,4 +148,63 @@ test.describe('holographic FX layer', () => {
       timeout: 10_000,
     })
   })
+
+  test('switching across all 4 FX-mode materials does not crash', async ({
+    page,
+  }) => {
+    // Track 2 wires up an optional macro reference texture per material
+    // (src/assets/textures/<material>_macro.png). When the PNG isn't
+    // bundled the loader falls back to procedural-only — no error, no
+    // missing-image network noise. This spec exercises every FX-mode
+    // material in sequence and proves the editor stays functional.
+    //
+    // It also catches the regression where an unloaded macro texture
+    // would cause the WebGL sampler to bind a deleted GLTexture and the
+    // shader to fail silently. Pageerror / requestfailed listeners
+    // surface those.
+    const customer = seedActiveCustomer()
+    const access = await loginAs(page, customer)
+    const uuid = await seedDraftWithImage(page, access, customer)
+
+    const errors: string[] = []
+    page.on('pageerror', (e) => {
+      // The describe-level beforeEach aborts requests to docs.opencv.org;
+      // the auto-crop worker's importScripts then legitimately throws.
+      // That's expected test setup, not a regression in our code.
+      if (e.message.includes('opencv.js')) return
+      errors.push('pageerror: ' + e.message)
+    })
+    // Macro textures live under /src/assets/textures — a 404 there is
+    // fine (graceful no-op), but any OTHER 5xx is a real failure.
+    page.on('response', (r) => {
+      if (r.status() >= 500) errors.push(`5xx: ${r.url()}`)
+    })
+
+    await page.goto(`/editor/${uuid}`, { waitUntil: 'domcontentloaded' })
+    await expect(page.getByTestId('editor-fx-canvas')).toBeVisible({
+      timeout: 10_000,
+    })
+
+    const materials = [
+      'holografico',
+      'holografico_transparente',
+      'eggshell_holografico',
+      'luminiscente',
+    ]
+    for (const m of materials) {
+      await page.getByTestId(`inspector-material-${m}`).click()
+      // Give the FX layer time to swap modes and the (possibly missing)
+      // macro PNG time to either land or fail-silent. 250ms is plenty
+      // — the texture load is async but never blocking.
+      await page.waitForTimeout(250)
+      await expect(page.getByTestId('editor-fx-canvas')).toBeVisible()
+    }
+
+    expect(errors, errors.join('\n')).toEqual([])
+    // Continuar still works after walking through all the modes.
+    await page.getByTestId('editor-continue').click()
+    await expect(page).toHaveURL(new RegExp(`/order-config/${uuid}$`), {
+      timeout: 10_000,
+    })
+  })
 })

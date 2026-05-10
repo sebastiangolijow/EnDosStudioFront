@@ -45,6 +45,34 @@
 import { onBeforeUnmount, ref, shallowRef } from 'vue'
 import type { ImagePoint } from './useAutoCrop'
 import { smoothPolygonPerimeter } from '@/utils/polygon'
+import { MATERIAL_MACRO_URLS } from '@/utils/materialColors'
+
+/**
+ * Map FX modes to the Material enum identifier used by MATERIAL_MACRO_URLS.
+ * (The JS-side mode names use English; the catalog's Material enum is the
+ * Spanish snake_case version. Single source of mapping kept here so callers
+ * don't have to know both.)
+ */
+const MODE_TO_MATERIAL = {
+  holographic: 'holografico',
+  holographic_transparent: 'holografico_transparente',
+  eggshell_holographic: 'eggshell_holografico',
+  luminescent: 'luminiscente',
+} as const
+
+/**
+ * Per-mode strength of the macro-texture modulation. Foil materials
+ * benefit most from the texture (the dot grain IS their signature
+ * look); eggshell uses moderate strength so the paper fiber grain reads
+ * subtle; luminescent uses low strength because we want the glow to
+ * dominate, not the particle texture.
+ */
+const TEXTURE_STRENGTH_BY_MODE: Record<string, number> = {
+  holographic: 0.45,
+  holographic_transparent: 0.40,
+  eggshell_holographic: 0.30,
+  luminescent: 0.20,
+}
 
 const VERTEX_SHADER = `#version 100
 attribute vec2 a_position;
@@ -64,6 +92,14 @@ varying vec2 v_uv;
 
 uniform sampler2D u_cut_stencil;
 uniform sampler2D u_artwork_stencil;
+// Optional macro reference texture for the active material. When present,
+// modulates the procedural color with photoreal material grain (foil dots,
+// paper fiber, glow particles). u_has_texture toggles the sampling — when
+// 0, the shader skips the texture2D call so it works fine even when the
+// PNG asset hasn't been generated yet.
+uniform sampler2D u_material_texture;
+uniform float u_has_texture;     // 0 = procedural only, 1 = sample texture
+uniform float u_texture_strength; // per-material multiply factor 0..1
 uniform float u_time;        // seconds since mount
 uniform vec2  u_mouse;       // 0..1, (0.5,0.5) = center
 uniform float u_intensity;   // 0..1, fade in/out
@@ -72,6 +108,7 @@ uniform float u_intensity;   // 0..1, fade in/out
 //   2.0 = holographic transparent (drops alpha over artwork interior so
 //          the canvas checker reads through, matching vinilo_transparente)
 //   3.0 = luminescent (solid greenish-yellow glow, no iridescence)
+//   4.0 = eggshell holographic (warm pastel, soft diffuse foil)
 // Sub-1 values noop the shader (the host fades intensity to 0).
 uniform float u_mode;
 
@@ -199,6 +236,30 @@ vec3 sample_iridescence(int palette_id, float t) {
   return iridescence_cool(t);
 }
 
+// Apply the optional macro-texture modulation. When u_has_texture is 0
+// the input color passes through unchanged (the shader still works
+// without any baked PNG present — important for graceful no-op when
+// the AI-generated assets haven't landed yet).
+//
+// The texture tiles 2× across the surface so individual grain elements
+// are visible at typical sticker zoom levels. Multiply blend preserves
+// the procedural gradient hue but brightness-modulates by the texture
+// — bright spots in the macro make the procedural color brighter
+// there; dark spots dim it. Strength is per-material: foil materials
+// want stronger texture (the dot pattern is the signature look),
+// eggshell wants moderate (paper fiber should be subtle), luminescent
+// wants subtle (we want the glow to dominate, not the particle grain).
+vec3 apply_macro_texture(vec3 color, float strength) {
+  if (u_has_texture < 0.5) return color;
+  vec3 macro_rgb = texture2D(u_material_texture, v_uv * 2.0).rgb;
+  // Multiply blend, gated by strength. mix(1.0, macro_rgb*1.5, strength)
+  // means at strength=0 we pass the original color; at strength=1 we
+  // multiply by macro_rgb × 1.5 (the 1.5 prevents the texture from
+  // darkening the gradient too much — texture brightness centered
+  // around 0.5-0.7 in a typical material PNG, ×1.5 ≈ 0.75-1.0).
+  return color * mix(vec3(1.0), macro_rgb * 1.5, strength);
+}
+
 vec4 mode_holographic_with_params(
   float in_cut,
   float in_artwork,
@@ -216,6 +277,9 @@ vec4 mode_holographic_with_params(
   float phase = (u_mouse.x - 0.5) * 1.5 + (u_mouse.y - 0.5) * 0.8;
   float t = diag + warp + phase;
   vec3 grad = sample_iridescence(p.palette_id, t);
+  // Modulate by the macro texture (foil dot / paper fiber grain) at
+  // u_texture_strength. No-op when no macro PNG is bundled.
+  grad = apply_macro_texture(grad, u_texture_strength);
 
   // === Specular highlight pattern ===
   //
@@ -384,6 +448,9 @@ vec4 mode_luminescent(float in_cut, float in_artwork) {
   // boundary. Adds gentle pulse modulation.
   float ring_t = smoothstep(0.0, 1.0, in_artwork);
   vec3 glow_color = mix(outer, inner, ring_t) * pulse;
+  // Macro texture modulation (glow particle grain). No-op when the
+  // luminiscente_macro.png isn't bundled.
+  glow_color = apply_macro_texture(glow_color, u_texture_strength);
 
   // === Bleed area — solid glow halo, full alpha ===
   vec3 bleed_color = glow_color;
@@ -496,6 +563,9 @@ export function useHolographicFX() {
   const uniforms = shallowRef<{
     u_cut_stencil: WebGLUniformLocation | null
     u_artwork_stencil: WebGLUniformLocation | null
+    u_material_texture: WebGLUniformLocation | null
+    u_has_texture: WebGLUniformLocation | null
+    u_texture_strength: WebGLUniformLocation | null
     u_time: WebGLUniformLocation | null
     u_mouse: WebGLUniformLocation | null
     u_intensity: WebGLUniformLocation | null
@@ -504,6 +574,17 @@ export function useHolographicFX() {
 
   const cutTex = shallowRef<WebGLTexture | null>(null)
   const artworkTex = shallowRef<WebGLTexture | null>(null)
+  // Macro reference texture for the active material. Replaced whenever
+  // setMode picks a material with a bundled macro PNG. `hasTexture` is
+  // the JS mirror of the u_has_texture uniform — drives both the bind
+  // call and the shader's branch (skip texture2D when 0).
+  const macroTex = shallowRef<WebGLTexture | null>(null)
+  // Cache loaded macro Image elements per Material so repeat picks
+  // don't re-fetch. The cache is keyed by the URL string (not the
+  // Material enum) since some materials might not have a macro PNG.
+  const macroImageCache = new Map<string, HTMLImageElement>()
+  let hasTexture = 0
+  let textureStrength = 0
 
   const mouse = { x: 0.5, y: 0.5 }
   let intensity = 0
@@ -566,6 +647,9 @@ export function useHolographicFX() {
     uniforms.value = {
       u_cut_stencil: glx.getUniformLocation(prog, 'u_cut_stencil'),
       u_artwork_stencil: glx.getUniformLocation(prog, 'u_artwork_stencil'),
+      u_material_texture: glx.getUniformLocation(prog, 'u_material_texture'),
+      u_has_texture: glx.getUniformLocation(prog, 'u_has_texture'),
+      u_texture_strength: glx.getUniformLocation(prog, 'u_texture_strength'),
       u_time: glx.getUniformLocation(prog, 'u_time'),
       u_mouse: glx.getUniformLocation(prog, 'u_mouse'),
       u_intensity: glx.getUniformLocation(prog, 'u_intensity'),
@@ -584,9 +668,10 @@ export function useHolographicFX() {
     glx.enableVertexAttribArray(posLoc)
     glx.vertexAttribPointer(posLoc, 2, glx.FLOAT, false, 0, 0)
 
-    // Two textures — created once, replaced via setPolygons.
+    // Three textures — created once, replaced via setPolygons / setMode.
     cutTex.value = glx.createTexture()
     artworkTex.value = glx.createTexture()
+    macroTex.value = glx.createTexture()
 
     // Pre-multiplied alpha is OFF (we write straight rgba), so the
     // canvas-stack default blend (over-compositing of stacked DOM
@@ -688,6 +773,80 @@ export function useHolographicFX() {
     uploadPolygonStencil(artworkTex.value, artworkPts, polySource)
   }
 
+  /**
+   * Load + upload the macro reference texture for the given mode. Async
+   * (image decode happens off the main thread). On success, sets
+   * hasTexture=1 + textureStrength to the per-mode preset; on failure
+   * (no PNG bundled, or decode error), leaves hasTexture=0 so the
+   * shader's apply_macro_texture noops.
+   *
+   * Cached: same URL won't re-fetch once loaded.
+   */
+  function loadMacroForMode(
+    mode:
+      | 'holographic'
+      | 'holographic_transparent'
+      | 'luminescent'
+      | 'eggshell_holographic'
+      | null,
+  ) {
+    if (mode === null) {
+      hasTexture = 0
+      textureStrength = 0
+      return
+    }
+    const material = MODE_TO_MATERIAL[mode]
+    const url = MATERIAL_MACRO_URLS[material]
+    if (!url) {
+      // No macro PNG bundled for this material → procedural-only.
+      // Shader's apply_macro_texture is a no-op when u_has_texture=0,
+      // so the visual just falls back to the Track 1 procedural look.
+      hasTexture = 0
+      textureStrength = 0
+      return
+    }
+    // Cache hit: just flag has_texture and strength; the GL texture
+    // already holds the right pixels from the previous load.
+    if (macroImageCache.has(url)) {
+      hasTexture = 1
+      textureStrength = TEXTURE_STRENGTH_BY_MODE[mode] ?? 0.4
+      return
+    }
+    // Miss: fetch + upload async. While loading, the shader keeps
+    // running with hasTexture=0 (procedural-only). When the image
+    // decodes, we upload to GL and flip the flag — no flash, no jank.
+    const img = new Image()
+    img.onload = () => {
+      const glx = gl.value
+      if (!glx || !macroTex.value) return
+      glx.bindTexture(glx.TEXTURE_2D, macroTex.value)
+      glx.texImage2D(
+        glx.TEXTURE_2D,
+        0,
+        glx.RGB,
+        glx.RGB,
+        glx.UNSIGNED_BYTE,
+        img,
+      )
+      // REPEAT so the texture tiles across the surface (the apply_macro
+      // helper samples at v_uv * 2.0 — i.e. 2 tiles across the canvas).
+      // Tileable PNGs are required (the prompt pack documents this).
+      glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_WRAP_S, glx.REPEAT)
+      glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_WRAP_T, glx.REPEAT)
+      glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_MIN_FILTER, glx.LINEAR)
+      glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_MAG_FILTER, glx.LINEAR)
+      macroImageCache.set(url, img)
+      hasTexture = 1
+      textureStrength = TEXTURE_STRENGTH_BY_MODE[mode] ?? 0.4
+    }
+    img.onerror = () => {
+      console.warn(`[holographic-fx] macro texture failed: ${url}`)
+      hasTexture = 0
+      textureStrength = 0
+    }
+    img.src = url
+  }
+
   function frame() {
     rafId = requestAnimationFrame(frame)
     const glx = gl.value
@@ -718,6 +877,15 @@ export function useHolographicFX() {
     glx.activeTexture(glx.TEXTURE1)
     glx.bindTexture(glx.TEXTURE_2D, artworkTex.value)
     glx.uniform1i(uni.u_artwork_stencil, 1)
+    // Macro texture sampler — bound even when hasTexture=0 so the
+    // sampler isn't pointing at deleted memory; the shader's
+    // apply_macro_texture short-circuits on u_has_texture before any
+    // texture2D call, so the bind is just for safety.
+    glx.activeTexture(glx.TEXTURE2)
+    glx.bindTexture(glx.TEXTURE_2D, macroTex.value)
+    glx.uniform1i(uni.u_material_texture, 2)
+    glx.uniform1f(uni.u_has_texture, hasTexture)
+    glx.uniform1f(uni.u_texture_strength, textureStrength)
 
     glx.uniform1f(uni.u_time, (performance.now() - mountedAt) / 1000)
     glx.uniform2f(uni.u_mouse, mouse.x, mouse.y)
@@ -779,6 +947,10 @@ export function useHolographicFX() {
     else modeValue = 0
     enabled.value = modeValue > 0
     targetIntensity = modeValue > 0 ? 1 : 0
+    // Kick off async load of the per-material macro reference texture.
+    // No-op when no PNG is bundled for this material (graceful fallback
+    // to procedural shading; ships before Track 2 art assets land).
+    loadMacroForMode(m)
     if (canvas.value) {
       // Pointer events off so the FX layer never blocks the UI canvas.
       canvas.value.style.pointerEvents = 'none'
@@ -805,6 +977,7 @@ export function useHolographicFX() {
       if (program.value) glx.deleteProgram(program.value)
       if (cutTex.value) glx.deleteTexture(cutTex.value)
       if (artworkTex.value) glx.deleteTexture(artworkTex.value)
+      if (macroTex.value) glx.deleteTexture(macroTex.value)
       const lose = glx.getExtension('WEBGL_lose_context')
       if (lose) lose.loseContext()
     }
@@ -812,6 +985,8 @@ export function useHolographicFX() {
     program.value = null
     cutTex.value = null
     artworkTex.value = null
+    macroTex.value = null
+    macroImageCache.clear()
   })
 
   return {
