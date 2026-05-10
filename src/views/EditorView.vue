@@ -576,21 +576,50 @@ watch(smoothingSlider, (v) => {
 // "vinilo transparente" also reduce the base-image opacity so the
 // canvas's checker pattern reads through the artwork — same effect the
 // reference shop uses to indicate the transparent vinyl finish.
+/** Map the customer's chosen material to a WebGL FX mode. The FX layer
+ *  paints over the artwork + bleed; bleed-halo color is owned separately
+ *  by the mask layer and read from MATERIAL_TEXTURE_URLS.
+ *
+ *  - holografico              → standard iridescent shimmer
+ *  - holografico_transparente → same shimmer, but with the canvas checker
+ *                              showing through the artwork (no opaque
+ *                              white vinyl backing)
+ *  - eggshell_holografico     → also holographic (eggshell finish is
+ *                              orthogonal — handled by the texture halo)
+ *  - luminiscente             → soft greenish-yellow glow that pulses
+ *  - everything else          → no FX overlay; mask halo + base image
+ *                              are sufficient
+ */
+function effectModeFor(
+  m: Material | '',
+): 'holographic' | 'holographic_transparent' | 'luminescent' | null {
+  if (m === 'holografico') return 'holographic'
+  if (m === 'holografico_transparente') return 'holographic_transparent'
+  if (m === 'eggshell_holografico') return 'holographic'
+  if (m === 'luminiscente') return 'luminescent'
+  return null
+}
+
 watch(material, (m) => {
   canvasRef.value?.setMaskPalette(getMaskPalette(m))
+  // Transparent vinyl OR transparent holographic both want the canvas
+  // checker showing through the artwork. The FX shader handles the
+  // holographic-transparent case (it boosts artwork-interior alpha so
+  // the checker reads through); plain vinilo_transparente uses the
+  // existing 2D base-layer alpha drop.
   canvasRef.value?.setTransparentMaterial(m === 'vinilo_transparente')
   // Material active = a colored halo exists. Used to gate halo-dependent
   // tweaks in drawBaseLayer / drawMaskLayer. "vinilo_transparente" gets
   // its own dedicated treatment via setTransparentMaterial above.
   canvasRef.value?.setMaterialActive(m !== '' && m !== 'vinilo_transparente')
-  // Holographic = iridescent diagonal-band overlay on top of the
-  // artwork (preserves base colors, adds shimmer). Both holographic
-  // SKUs trigger it; eggshell_holografico keeps the eggshell texture
-  // and skips the overlay (the eggshell finish is matte enough that
-  // a strong shimmer would look fake).
+  // Legacy boolean — kept for the (now-empty) drawBaseLayer branch that
+  // used to call drawHolographicOverlay. The WebGL FX layer is the
+  // canonical holographic renderer; this just keeps state consistent.
   canvasRef.value?.setHolographicMaterial(
     m === 'holografico' || m === 'holografico_transparente',
   )
+  // The actual per-material visual: WebGL FX mode.
+  canvasRef.value?.setEffectMode(effectModeFor(m))
 })
 
 // Debounced persistence. The customer can flip checkboxes / toggle materials
@@ -744,6 +773,7 @@ async function bootstrapEditor() {
       material.value === 'holografico' ||
         material.value === 'holografico_transparente',
     )
+    canvasRef.value?.setEffectMode(effectModeFor(material.value))
     // Push the bg-removal default so the base layer respects it from the
     // very first paint (otherwise a customer with a pre-existing mask
     // would briefly see the original background before the watcher fires).

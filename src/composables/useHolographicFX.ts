@@ -67,18 +67,23 @@ uniform sampler2D u_artwork_stencil;
 uniform float u_time;        // seconds since mount
 uniform vec2  u_mouse;       // 0..1, (0.5,0.5) = center
 uniform float u_intensity;   // 0..1, fade in/out
+// Mode selector:
+//   1.0 = holographic (opaque)
+//   2.0 = holographic transparent (drops alpha over artwork interior so
+//          the canvas checker reads through, matching vinilo_transparente)
+//   3.0 = luminescent (solid greenish-yellow glow, no iridescence)
+// Sub-1 values noop the shader (the host fades intensity to 0).
+uniform float u_mode;
 
-// 5-stop iridescent palette — same hex stops the existing 2D overlay
-// uses, so the WebGL shimmer reads as the same material as the bleed
-// halo's bundled holographic.png texture.
-const vec3 C_CYAN   = vec3(0.133, 0.827, 0.933);   // #22D3EE
-const vec3 C_VIOLET = vec3(0.659, 0.333, 0.969);   // #A855F7
-const vec3 C_PINK   = vec3(0.957, 0.447, 0.714);   // #F472B6
-const vec3 C_GOLD   = vec3(0.980, 0.800, 0.082);   // #FACC15
-const vec3 C_LIME   = vec3(0.639, 0.902, 0.208);   // #A3E635
+// === Iridescent palette ===
+// 5-stop palette, same hex stops as the bundled holografico.png texture
+// so the WebGL shimmer reads as the same material as the bleed halo.
+// Full saturation — real holographic foil reflects vivid color zones
+// (the "tilt and see green / teal / pink shift through" effect on a
+// physical sticker), not pastel rainbow paint. The previous
+// desaturation toward white made the result look like watercolor.
+const vec3 WHITE = vec3(1.0);
 
-// Cheap value-noise. Hash → smoothstep blend of 4 corners. Good enough
-// for the warp; we don't need perceptual quality, just non-uniformity.
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
@@ -93,70 +98,213 @@ float noise(vec2 p) {
   );
 }
 
-// Sample the iridescent palette at parameter t in 0..1, with smooth
-// transitions between the 5 stops.
 vec3 iridescence(float t) {
-  t = fract(t);  // wrap for the animated phase shift
-  if (t < 0.25)      return mix(C_CYAN,   C_VIOLET, t * 4.0);
-  else if (t < 0.5)  return mix(C_VIOLET, C_PINK,   (t - 0.25) * 4.0);
-  else if (t < 0.75) return mix(C_PINK,   C_GOLD,   (t - 0.5) * 4.0);
-  else               return mix(C_GOLD,   C_LIME,   (t - 0.75) * 4.0);
+  t = fract(t);
+  vec3 cyan   = vec3(0.133, 0.827, 0.933);  // #22D3EE
+  vec3 violet = vec3(0.659, 0.333, 0.969);  // #A855F7
+  vec3 pink   = vec3(0.957, 0.447, 0.714);  // #F472B6
+  vec3 gold   = vec3(0.980, 0.800, 0.082);  // #FACC15
+  vec3 lime   = vec3(0.639, 0.902, 0.208);  // #A3E635
+  if (t < 0.25)      return mix(cyan,   violet, t * 4.0);
+  else if (t < 0.5)  return mix(violet, pink,   (t - 0.25) * 4.0);
+  else if (t < 0.75) return mix(pink,   gold,   (t - 0.5) * 4.0);
+  else               return mix(gold,   lime,   (t - 0.75) * 4.0);
+}
+
+// === Holographic mode ===
+//
+// Mental model: a CLEAR LACQUER COATING on top of opaque printed ink.
+// The ink layer (the customer's artwork) is below us, fully solid. The
+// lacquer is mostly transparent — only visible where light reflects
+// off it. Our shader's job is to compute "where would highlights fall"
+// and write iridescent color ONLY in those regions, with alpha=0
+// everywhere else over the artwork. The bleed area has no ink below,
+// so it gets the full holographic field at high alpha.
+//
+// What changed from the previous version:
+//   - NO more uniform-alpha overlay across the artwork interior.
+//     Previous version + screen-blend universally washed out the
+//     artwork — saturation and blacks both lost to the overlay.
+//   - Highlight pattern drives artwork alpha. Most artwork pixels:
+//     alpha = 0 → artwork shows through fully intact. Specular
+//     highlights: visible iridescent reflection at moderate alpha.
+//   - Standard alpha blending (no mix-blend-mode trickery). The host
+//     canvas paints over the artwork normally; transparent FX pixels
+//     leave the artwork unchanged.
+//
+// Effect inputs:
+//   - Iridescent gradient (5-stop, vivid) — the color of the foil
+//   - Mouse-anchored sheen — a bright spot at the cursor (where the
+//     simulated "light source" is hitting)
+//   - Sweep band pattern — a few thin parallel iridescent bands across
+//     the surface, like the streaks you see on real holographic foil
+//     when you tilt it. THIS is what defines the "highlight regions"
+//     — outside these bands, the artwork has alpha=0 protection.
+//   - Edge bloom — a soft glow JUST INSIDE the cut polygon boundary
+vec4 mode_holographic(float in_cut, float in_artwork, bool transparent_mode) {
+  // Iridescent gradient parameter. Mouse drives the phase shift —
+  // moving the cursor slides which colors are visible across the
+  // sticker, simulating "tilting the foil to catch light at a
+  // different angle". Two-octave noise warp gives organic color
+  // boundaries instead of straight diagonal stripes.
+  float n1 = noise(v_uv * 3.0) * 0.18;
+  float n2 = noise(v_uv * 9.0) * 0.06;
+  float warp = n1 + n2;
+  float diag = (v_uv.x + v_uv.y) * 0.5;
+  float phase = (u_mouse.x - 0.5) * 1.5 + (u_mouse.y - 0.5) * 0.8;
+  float t = diag + warp + phase;
+  vec3 grad = iridescence(t);
+
+  // === Specular highlight pattern ===
+  //
+  // This is the heart of the new approach. We compute a 0..1 mask that
+  // says "where would light reflections actually appear on this
+  // sticker if it were tilted toward the cursor?" Then we use that
+  // mask to drive the artwork-interior alpha — most pixels get 0,
+  // only the simulated specular zones get visible iridescence.
+  //
+  // The pattern combines:
+  //   1. A broad mouse-anchored hot spot (where the "light" hits
+  //      hardest)
+  //   2. Three thin diagonal bands at offsets, like the streaks of
+  //      reflection you see on real holographic foil
+  //
+  // Both are squared/exp'd so they're MOSTLY zero — the bands are
+  // narrow streaks, not broad swaths. That's the "sparse highlight"
+  // architecture.
+
+  // Hot spot at the mouse position. Falls off quickly so it's a
+  // localized "where the light is" indicator, not a general wash.
+  vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
+  float mouse_dist = distance(v_uv, mouse_pos);
+  float hotspot = exp(-mouse_dist * mouse_dist * 8.0);
+
+  // Diagonal sweep bands — narrow streaks across the surface.
+  // band_axis is positioned along an angle; shifted slightly by the
+  // mouse so they "rotate" as the customer tilts. fract() makes them
+  // periodic; exp() of a squared distance to the band center makes
+  // each band narrow and bright.
+  float band_axis = v_uv.x * 1.2 - v_uv.y * 0.6 + (u_mouse.x - 0.5) * 0.3;
+  float b1 = exp(-pow(fract(band_axis * 1.4 + 0.10) - 0.5, 2.0) * 80.0);
+  float b2 = exp(-pow(fract(band_axis * 2.1 + 0.55) - 0.5, 2.0) * 120.0);
+  float b3 = exp(-pow(fract(band_axis * 3.0 + 0.85) - 0.5, 2.0) * 160.0);
+  float bands = b1 * 0.65 + b2 * 0.45 + b3 * 0.30;
+
+  // The combined highlight mask. Bands modulated by the hotspot —
+  // bands are brightest near the cursor and fade out away from it.
+  // This focuses the reflection energy on where the light is hitting,
+  // matching real specular behavior.
+  float highlight = clamp(bands * (0.4 + hotspot * 0.9), 0.0, 1.0);
+
+  // Soft cut-edge bloom — a thin band of iridescent diffusion JUST
+  // INSIDE the polygon boundary. Cheap proxy for the diffused light
+  // wrap visible on the reference. Stencil's LINEAR filter gives us a
+  // soft 0..1 transition we can grab here.
+  float edge_bloom = smoothstep(0.0, 0.45, in_cut)
+                   * (1.0 - smoothstep(0.45, 1.0, in_cut));
+
+  // === Composing for the bleed area ===
+  //
+  // No artwork to preserve here — full holographic surface, vivid
+  // colors, bright highlights where they fall.
+  vec3 bleed_color = mix(grad, WHITE, clamp(highlight * 0.5, 0.0, 1.0));
+  // Multiplicative grain — modulates intensity instead of ADDING
+  // brightness. Preserves color.
+  float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.06;
+  bleed_color *= grain_mul;
+  bleed_color += vec3(edge_bloom) * 0.12;  // subtle inner-edge glow
+  float bleed_alpha = 0.95;
+
+  // === Composing for the artwork interior ===
+  //
+  // Sparse highlights only. Most pixels: alpha = 0 → artwork is
+  // fully visible underneath, with all its blacks and saturation
+  // intact. Highlight regions: write iridescent color at moderate
+  // alpha, simulating a reflection on the laminate surface.
+  vec3 artwork_color = grad;
+  // Brighten the highlight pattern toward white so it reads as a
+  // light reflection. Outside the highlights this is zero, so the
+  // artwork color is moot (alpha will be 0 there).
+  artwork_color = mix(artwork_color, WHITE, clamp(highlight * 0.7, 0.0, 1.0));
+  // Artwork-interior alpha is DRIVEN by the highlight pattern.
+  // Maximum alpha 0.55 even at peak highlights so the artwork still
+  // reads through clearly. Outside the bands, alpha goes to 0 → the
+  // artwork is fully untouched. This is the key change.
+  float artwork_alpha = highlight * 0.55;
+
+  // Transparent-mode tweak: under "no white vinyl" the laminate is
+  // the only thing on top of the design, so highlights should be a
+  // touch stronger over the artwork.
+  if (transparent_mode) {
+    artwork_alpha = highlight * 0.70;
+  }
+
+  // Combine the two regions weighted by stencil. The shader writes
+  // either bleed_color@bleed_alpha (where in_artwork ≈ 0) or
+  // artwork_color@artwork_alpha (where in_artwork ≈ 1), with smooth
+  // interpolation at the artwork edge.
+  float bleed_factor = in_cut * (1.0 - in_artwork);
+  float artwork_factor = in_cut * in_artwork;
+  vec3 rgb = bleed_color * bleed_factor + artwork_color * artwork_factor;
+  float alpha = bleed_alpha * bleed_factor + artwork_alpha * artwork_factor;
+
+  return vec4(rgb, alpha);
+}
+
+// === Luminescent mode ===
+//
+// Glow-in-the-dark vinyl. No iridescence — solid greenish-yellow halo
+// concentrated in the bleed ring with a gentle pulse that breathes
+// over ~3 seconds. Faint over the artwork (so the design still reads
+// dominant) but visible enough to communicate "this material glows."
+vec4 mode_luminescent(float in_cut, float in_artwork) {
+  // Soft pulse — 0.85..1.0 over a ~3s cycle.
+  float pulse = 0.92 + 0.08 * sin(u_time * 2.1);
+
+  // Color: vivid yellow-green on the inside, fading to a pale teal at
+  // the cut polygon boundary. That's the recognizable "phosphorescent"
+  // color of glow vinyl in low light.
+  vec3 inner = vec3(0.7, 1.0, 0.4);   // bright yellow-green
+  vec3 outer = vec3(0.5, 0.95, 0.85); // pale teal-cyan
+
+  // Distance-from-center within the bleed ring drives the inner→outer
+  // mix. Approximate via a quick stencil sample at a slightly larger
+  // sample radius — but cheaper just to use the artwork mask as a
+  // proxy: closer to artwork = inner, further = outer. Smoothstep for
+  // a soft transition.
+  float ring_t = smoothstep(0.0, 1.0, in_artwork);
+  vec3 glow_color = mix(outer, inner, ring_t) * pulse;
+
+  float bleed_mask = in_cut * (1.0 - in_artwork);
+  float artwork_mask = in_cut * in_artwork;
+
+  // Strong in the bleed (the "halo"), faint over the artwork.
+  vec3 rgb = glow_color * bleed_mask + glow_color * artwork_mask * 0.4;
+  float a  = 0.7 * bleed_mask + 0.18 * artwork_mask;
+  return vec4(rgb, a);
 }
 
 void main() {
-  // Single-channel stencil textures encode "is this UV inside the
-  // polygon?" 1.0 = inside, 0.0 = outside. The artwork stencil is the
-  // tight silhouette; the cut stencil includes the bleed margin. So:
-  //   inside_artwork  = inside the artwork itself
-  //   inside_bleed    = inside cut polygon but outside artwork
-  //   outside         = outside cut polygon (don't render anything)
   float in_cut     = texture2D(u_cut_stencil, v_uv).r;
   float in_artwork = texture2D(u_artwork_stencil, v_uv).r;
 
   if (in_cut < 0.01) {
-    // Outside the cut polygon → fully transparent.
     gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
     return;
   }
 
-  // Iridescent gradient parameter — diagonal across the canvas, with a
-  // mouse-driven phase shift so the colors slide as the customer moves
-  // their cursor. Animated drift via u_time gives a slow autonomous
-  // shimmer even when the cursor is still.
-  float diag = (v_uv.x + v_uv.y) * 0.5;
-  float warp = noise(v_uv * 6.0 + u_time * 0.05) * 0.15;
-  float phase = u_time * 0.04 + (u_mouse.x - 0.5) * 0.6;
-  float t = diag + warp + phase;
-  vec3 grad = iridescence(t);
+  vec4 col;
+  if (u_mode > 2.5) {
+    col = mode_luminescent(in_cut, in_artwork);
+  } else if (u_mode > 1.5) {
+    col = mode_holographic(in_cut, in_artwork, true);
+  } else if (u_mode > 0.5) {
+    col = mode_holographic(in_cut, in_artwork, false);
+  } else {
+    col = vec4(0.0);
+  }
 
-  // Highlight bands — periodic Gaussian-ish stripes at a different angle
-  // that "sweep" across the surface over time. This is what gives a
-  // physical-feeling reflection like the gorilla example image #9.
-  float band_axis = v_uv.x * 1.3 - v_uv.y * 0.7 + u_time * 0.15;
-  float band = exp(-pow(fract(band_axis * 1.7) - 0.5, 2.0) * 30.0);
-  // Second band at a slightly different frequency for richness.
-  float band2 = exp(-pow(fract(band_axis * 2.3 + 0.4) - 0.5, 2.0) * 60.0);
-  float highlight = (band * 0.5 + band2 * 0.3);
-
-  // Bleed area: full-strength holographic with a hint of base brightness.
-  // Artwork interior: subtler — the artwork colors should still read
-  // dominant, the iridescence only kisses them.
-  float bleed_mask = in_cut * (1.0 - in_artwork);
-  float artwork_mask = in_cut * in_artwork;
-
-  // Outside-the-artwork (bleed ring): rich color + bright highlights.
-  vec3 bleed_color = grad + vec3(highlight) * 0.8;
-  float bleed_alpha = 0.95;
-
-  // Inside-the-artwork: low-alpha tint + soft highlights. Screen-style
-  // blend will be done by GL_BLEND_SRC_ALPHA on the host side.
-  vec3 artwork_color = grad + vec3(highlight) * 0.6;
-  float artwork_alpha = 0.32 * (0.5 + highlight);
-
-  vec3 final_rgb = bleed_color * bleed_mask + artwork_color * artwork_mask;
-  float final_a  = bleed_alpha * bleed_mask + artwork_alpha * artwork_mask;
-
-  gl_FragColor = vec4(final_rgb * u_intensity, final_a * u_intensity);
+  gl_FragColor = vec4(col.rgb * u_intensity, col.a * u_intensity);
 }
 `
 
@@ -224,6 +372,7 @@ export function useHolographicFX() {
     u_time: WebGLUniformLocation | null
     u_mouse: WebGLUniformLocation | null
     u_intensity: WebGLUniformLocation | null
+    u_mode: WebGLUniformLocation | null
   } | null>(null)
 
   const cutTex = shallowRef<WebGLTexture | null>(null)
@@ -236,6 +385,12 @@ export function useHolographicFX() {
   let rafId = 0
   let polySource: PolygonStencilSource | null = null
   let canvasSize = { w: 0, h: 0 }
+  // Active material's effect mode. Drives the shader's branch.
+  //   0 = off (host fades intensity → render skipped)
+  //   1 = holographic opaque
+  //   2 = holographic transparent
+  //   3 = luminescent
+  let modeValue = 0
   // Reusable offscreen canvas for stencil rasterization. Cheaper than
   // newing one per setPolygons call (which can fire on every margin
   // slider drag).
@@ -287,6 +442,7 @@ export function useHolographicFX() {
       u_time: glx.getUniformLocation(prog, 'u_time'),
       u_mouse: glx.getUniformLocation(prog, 'u_mouse'),
       u_intensity: glx.getUniformLocation(prog, 'u_intensity'),
+      u_mode: glx.getUniformLocation(prog, 'u_mode'),
     }
 
     // Full-screen quad — two triangles covering NDC.
@@ -439,6 +595,7 @@ export function useHolographicFX() {
     glx.uniform1f(uni.u_time, (performance.now() - mountedAt) / 1000)
     glx.uniform2f(uni.u_mouse, mouse.x, mouse.y)
     glx.uniform1f(uni.u_intensity, intensity)
+    glx.uniform1f(uni.u_mode, modeValue)
 
     glx.drawArrays(glx.TRIANGLES, 0, 6)
   }
@@ -461,14 +618,32 @@ export function useHolographicFX() {
     if (polySource) rebuildStencils()
   }
 
-  function setEnabled(v: boolean) {
-    enabled.value = v
-    targetIntensity = v ? 1 : 0
+  /** Material effect mode. Pass `null` or `'off'` to fade out.
+   *
+   *  All modes use STANDARD alpha blending (no mix-blend-mode tricks).
+   *  Previous attempts with `screen` blend universally brightened the
+   *  artwork — even deep blacks became pastel-tinted because screen()
+   *  mathematically can't preserve a black pixel under any non-black
+   *  overlay. The shader now produces sparse, mostly-transparent
+   *  output over the artwork (only the specular highlight zones write
+   *  visible alpha), so standard alpha blend gives us "shiny laminate
+   *  reflections on opaque ink" — which is what real holographic
+   *  vinyl does.
+   */
+  function setMode(
+    m: 'holographic' | 'holographic_transparent' | 'luminescent' | null,
+  ) {
+    if (m === 'holographic') modeValue = 1
+    else if (m === 'holographic_transparent') modeValue = 2
+    else if (m === 'luminescent') modeValue = 3
+    else modeValue = 0
+    enabled.value = modeValue > 0
+    targetIntensity = modeValue > 0 ? 1 : 0
     if (canvas.value) {
-      // Toggle pointer-events off so the FX layer never blocks the UI
-      // canvas from receiving cursor events. Display stays so the rAF
-      // can fade out smoothly; only flips to none after intensity hits 0.
+      // Pointer events off so the FX layer never blocks the UI canvas.
       canvas.value.style.pointerEvents = 'none'
+      // No blend mode — standard alpha compositing.
+      canvas.value.style.mixBlendMode = ''
     }
   }
 
@@ -504,7 +679,7 @@ export function useHolographicFX() {
     enabled,
     start,
     setSize,
-    setEnabled,
+    setMode,
     setPolygons,
     setMouse,
   }

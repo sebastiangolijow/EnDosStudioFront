@@ -128,6 +128,13 @@ export function useCanvasEditor() {
    *  `holografico_transparente`). Drives the iridescent overlay drawn
    *  on top of the artwork in drawBaseLayer. */
   const isHolographicMaterial = ref(false)
+  /** Effect mode the WebGL FX layer should render. Set by EditorView
+   *  whenever the customer picks a material. Single source of truth for
+   *  per-material visual treatment beyond the bleed halo color, which
+   *  is owned separately by the mask layer. */
+  const effectMode = ref<
+    'holographic' | 'holographic_transparent' | 'luminescent' | null
+  >(null)
   /** UI smoothing slider value (2–10). Drives perimeter-Gaussian passes
    *  applied to the polygon before rendering. The minimum is 2 — below
    *  that, per-vertex normal-offset self-intersections (from sharp
@@ -507,6 +514,16 @@ export function useCanvasEditor() {
     drawBaseLayer()
   }
 
+  /** Set the WebGL FX mode for the current material. Single source of
+   *  truth for per-material visual effects beyond the bleed halo. The
+   *  caller (EditorView) maps the material identifier to one of the
+   *  concrete modes. `null` = no FX. */
+  function setEffectMode(
+    mode: 'holographic' | 'holographic_transparent' | 'luminescent' | null,
+  ): void {
+    effectMode.value = mode
+  }
+
   /** Set the UI smoothing slider value (0–10). Re-renders the mask layer
    *  and (if removeBackground is on) the base layer's clip mask. Does NOT
    *  re-run OpenCV — the polygon stays the same; only the geometric
@@ -609,6 +626,7 @@ export function useCanvasEditor() {
     // watch for resize / load and rebuild dependent textures.
     fit: fitRef,
     isHolographicMaterial,
+    effectMode,
     // event handlers (template)
     onPointerDown,
     onPointerMove,
@@ -623,6 +641,7 @@ export function useCanvasEditor() {
     setTransparentMaterial,
     setMaterialActive,
     setHolographicMaterial,
+    setEffectMode,
     setSmoothingSlider,
     getMaskAsBlob,
     reset,

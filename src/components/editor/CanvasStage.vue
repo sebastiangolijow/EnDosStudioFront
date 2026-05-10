@@ -22,7 +22,7 @@ const {
   maskPoints,
   artworkPoints,
   fit,
-  isHolographicMaterial,
+  effectMode,
   smoothingSlider,
   onPointerDown,
   onPointerMove,
@@ -36,6 +36,7 @@ const {
   setTransparentMaterial,
   setMaterialActive,
   setHolographicMaterial,
+  setEffectMode,
   setSmoothingSlider,
   getMaskAsBlob,
   reset,
@@ -70,8 +71,8 @@ watch(fit, (f) => {
   fx.setSize(rect.width, rect.height)
 })
 
-watch(isHolographicMaterial, (h) => {
-  fx.setEnabled(h)
+watch(effectMode, (mode) => {
+  fx.setMode(mode)
 })
 
 // Push the polygon-pair to the FX layer whenever it changes. The shader
@@ -137,6 +138,9 @@ defineExpose({
   setMaterialActive: (active: boolean) => setMaterialActive(active),
   setHolographicMaterial: (holographic: boolean) =>
     setHolographicMaterial(holographic),
+  setEffectMode: (
+    mode: 'holographic' | 'holographic_transparent' | 'luminescent' | null,
+  ) => setEffectMode(mode),
   setSmoothingSlider: (value: number) => setSmoothingSlider(value),
   getMaskAsBlob: () => getMaskAsBlob(),
   reset: () => reset(),
