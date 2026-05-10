@@ -1,9 +1,9 @@
 # StickerApp Frontend — AI Context
 
 > **Studio**: YeKo Studio · **Client**: Barcelona print shop selling custom stickers
-> **Stack**: Vue 3 · Vite · TypeScript · Vue Router · Pinia · Tailwind CSS · Axios · Canvas API · OpenCV.js (CDN)
+> **Stack**: Vue 3 · Vite · TypeScript · Vue Router · Pinia · Tailwind CSS · Axios · Canvas API · WebGL (FX layer) · OpenCV.js (CDN)
 > **Backend**: separate Django + DRF project at `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (https://github.com/sebastiangolijow/EnDosStudioApp)
-> **Status**: feature-complete for the MVP customer flow as of session 2026-05-03 + repricing 2026-05-09 + catalog M3a 2026-05-09 + smart-cut (rembg AI background removal) 2026-05-09 — feature shipped + committed, polishing pass in flight (uncommitted; gorilla margin behavior still buggy on complex artwork — see "Pick up here tomorrow" below). SPA shipped end-to-end (auth, upload, editor with auto-crop + Recorte inteligente + materials + Forma + halo, order-config, checkout stub, catalog browse/buy, admin product CRUD). 50/50 functional Playwright specs passing. Editor matches the reference shop's UX (vivid material halo in bleed margin, transparent vinyl preview, geometric shapes pass through editor, background removal). Stripe live keys + email SMTP + first deploy are the operational blockers, not code.
+> **Status**: feature-complete for the MVP customer flow + smart-cut margin reworked + WebGL holographic FX + AI macro textures shipped (sessions 2026-05-03, 05-09, 05-10). 54/54 functional Playwright specs passing. Editor renders premium material previews via a 4-layer canvas stack with GLSL fragment shader for per-material visual treatment (4 distinct modes: holografico, holografico_transparente, eggshell_holografico, luminiscente). Stripe live keys + email SMTP + first deploy remain the operational blockers, not code.
 
 This file is the index for any AI agent working on the StickerApp frontend. Read it before doing anything. It captures the YeKo Studio mindset, the design tokens (locked), the tech-stack decisions, the screen inventory, and the conventions we'll follow.
 
@@ -140,32 +140,46 @@ Use holographic accents **sparingly** — selected MaterialCard borders, hero hi
 
 ---
 
-## 🗂️ Folder structure (current, as of 2026-05-03)
+## 🗂️ Folder structure (current, as of 2026-05-10)
 
 ```
 src/
 ├── assets/
 │   ├── logo/                  # logo
 │   ├── examples/              # marketing imagery
-│   └── textures/              # MATERIAL TEXTURES — bundled PNGs, 512×512:
-│                              # holografico, holografico_transparente,
-│                              # dorado, plateado, eggshell, eggshell_holografico,
-│                              # vinilo_blanco, luminiscente
-│                              # (vinilo_transparente has no PNG by design — see below)
+│   └── textures/              # MATERIAL TEXTURES:
+│                              # ── halo (mask layer, bundled): holografico,
+│                              #    holografico_transparente, dorado, plateado,
+│                              #    eggshell, eggshell_holografico,
+│                              #    vinilo_blanco, luminiscente — 512×512 PNGs
+│                              # ── macro (WebGL FX layer, AI-generated):
+│                              #    holografico_macro, holografico_transparente_macro,
+│                              #    eggshell_holografico_macro, luminiscente_macro
+│                              #    — 1024×1024 PNGs from DALL-E 3
+│                              # (vinilo_transparente has no PNG by design)
 ├── components/
 │   ├── ui/                    # AppButton, AppInput, AppCard, AppModal, AppToast, AppStepper
 │   ├── layout/                # AppHeader, AppShell, DashboardShell
 │   ├── upload/                # UploadDropzone, FilePreview
 │   ├── editor/
-│   │   ├── CanvasStage.vue    # 3-layer stack: mask → base → ui (DOM order = visual order)
-│   │   ├── EditorToolbar.vue  # Auto cut + 4 stub buttons; Auto cut disabled for non-contorneado
+│   │   ├── CanvasStage.vue    # 4-layer stack: mask → base → fx (WebGL) → ui
+│   │   │                      # mask (2D): bleed halo
+│   │   │                      # base (2D): customer artwork
+│   │   │                      # fx   (WebGL): holographic shader (idle off non-foil)
+│   │   │                      # ui   (2D): cursor / pointer events
+│   │   ├── EditorToolbar.vue  # Auto cut + Smart cut + 3 stub buttons
 │   │   └── EditorInspector.vue # right rail: Forma + Material + Relieve + Vista
-│   │                          # + Margen slider + Detección sliders
+│   │                          # + Margen slider (5-30 mm) + Suavidad slider (2-10)
 │   └── order/                 # MaterialCard, ShapeCard, SizePicker, QuantityStepper,
 │                              # OrderSummary, ShippingForm, OrderHistoryCard
 ├── composables/
 │   ├── useAutoCropWorker.ts   # singleton Web Worker + request-id-keyed promise map
-│   ├── useCanvasEditor.ts     # 3-layer canvas, fit transform, mask/halo/clip state
+│   ├── useCanvasEditor.ts     # canvas state, fit transform, mask/halo/clip state,
+│   │                          # exposes effectMode + setEffectMode for FX driving
+│   ├── useHolographicFX.ts    # NEW (2026-05-10) — WebGL FX renderer.
+│   │                          # GLSL fragment shader, polygon stencils at DPR
+│   │                          # resolution, mouse-anchored shimmer, 4 modes,
+│   │                          # macro-texture sampling with graceful no-op
 │   ├── useAutoCrop.ts         # legacy main-thread; kept on disk, not imported
 │   ├── useOpenCV.ts           # legacy CDN-script gate; kept for reference
 │   ├── useAuth.ts
@@ -175,10 +189,11 @@ src/
 │                              # alpha → bg-trim → canny strategies; emits
 │                              # { points, areaPx, artworkPoints? }
 ├── utils/
-│   └── materialColors.ts      # MATERIAL_TEXTURE_URLS + textureFill factory +
-│                              # per-material MaskPalette (fill + stroke)
+│   ├── materialColors.ts      # MATERIAL_TEXTURE_URLS (halo) + MATERIAL_MACRO_URLS
+│   │                          # (Vite import.meta.glob; auto-discovers _macro PNGs)
+│   │                          # + textureFill factory + per-material MaskPalette
+│   └── polygon.ts             # smoothPolygonPerimeter (Chaikin/Gaussian iterations)
 ├── stores/                    # auth.store, order.store, ui.store
-│                              # (sticker store merged into order — drafts ARE orders)
 ├── views/                     # 14 views, one per route
 ├── services/                  # api (axios + JWT refresh), auth/orders/files services
 ├── types/
@@ -189,6 +204,14 @@ src/
 └── styles/
     ├── tokens.css
     └── globals.css
+
+docs/
+├── design-pack.pdf            # source of truth for visuals
+├── mockups.jpeg               # six-screen composite from bootstrap
+├── material-textures-prompts.md  # NEW (2026-05-10) — AI prompt pack
+└── archive/
+    ├── SESSION_START.md
+    └── SESSION_2026_05_03_editor.md
 ```
 
 Architecture rules (non-negotiable):
@@ -289,6 +312,45 @@ long edge (see `useAutoCropWorker.imageToWorkingImageData`). Polygon
 coordinates returned by the worker are scaled back to image-natural
 pixels. The original `File` is what gets uploaded to the backend —
 the working-size canvas is editor-only.
+
+### WebGL FX layer (holographic / luminescent materials)
+
+The editor has a 4-layer canvas stack: mask (2D) → base (2D) → fx (WebGL)
+→ ui (2D). The FX layer is a separate `<canvas>` driven by
+`useHolographicFX.ts`. It paints a per-material visual treatment
+(holographic shimmer, phosphorescent glow) on top of the artwork. Rules:
+
+- **WebGL canvas is its own DOM element** — sibling of the 2D canvases,
+  not a `getContext('webgl')` on the base canvas. WebGL and 2D
+  contexts are mutually exclusive on a single canvas.
+- **Mostly idle**: when the customer's material isn't holographic /
+  luminescent, the shader fades intensity to 0 and the rAF loop
+  short-circuits before drawing. Battery-friendly on mobile.
+- **Polygon stencils rasterized at drawingBufferWidth/Height** (DPR-
+  aware), NOT at CSS resolution. CSS resolution + LINEAR filtering
+  produces a 1-2 px alpha-soft halo at the polygon edge → iridescent
+  fringe leaks past the cut line. Same `smoothPolygonPerimeter` +
+  Chaikin trace as the base canvas's clip path so the shapes align.
+- **Standard alpha blending — no `mix-blend-mode`**. Earlier attempt
+  with `screen` blend universally washed out the artwork (screen()
+  can't preserve a black pixel). The shader compensates by writing
+  alpha=0 over most of the artwork interior; only the sparse
+  highlight regions write visible iridescence. Result: artwork stays
+  100% solid; reflections appear ONLY where the simulated light
+  catches the laminate.
+- **Material differentiation lives in shader params** (per-material
+  palette, band sharpness, hotspot focus, alpha caps). 4 modes:
+  holografico (cool foil, sharp bands), holografico_transparente
+  (same palette + stronger interior alpha), eggshell_holografico
+  (warm pastel, broad soft bands), luminescent (greenish-yellow glow,
+  edge-concentrated).
+- **Macro textures (AI-generated PNGs)** sampled as a multiply layer
+  on top of the procedural color. Per-material strength dials in
+  `useHolographicFX.ts:TEXTURE_STRENGTH_BY_MODE`. Loading is async +
+  cached; if the PNG isn't bundled the shader falls back to procedural-
+  only (graceful no-op). Drop a `<material>_macro.png` in
+  `src/assets/textures/` and Vite's import.meta.glob picks it up next
+  reload — no code changes needed.
 
 ### Async states are explicit
 
@@ -465,36 +527,42 @@ The `api-contract-check` skill (separate, installed at `~/.claude/skills/api-con
 
 ## 🚧 Status
 
-### Pick up here tomorrow (open thread from EOD 2026-05-09)
+### Pick up here tomorrow (open thread from EOD 2026-05-10)
 
-**Smart-cut margin slider still produces visual artifacts at large margins.**
-See the "Polishing work / Known issue" subsection under the smart-cut
-session log below for the diagnosis and three concrete hypotheses to
-try in order of cheapness. Reproduction recipe is documented there.
+**Holographic effect should respect the artwork's surrounding color
+instead of overlaying its own iridescence.**
 
-**Uncommitted work** — all the smart-cut polishing is in the working
-tree but NOT committed (the gorilla repro still shows the bug; don't
-squash these into a "feat" commit until the fix lands). Files modified
-locally:
+When the customer applies `holografico` (or any holographic SKU) on
+artwork that already has a colored background — e.g. the gorilla on
+teal — today's WebGL FX layer paints the iridescent rainbow over
+EVERYTHING inside the cut polygon, including the bleed area where the
+backend's smart-cut already placed the original RGB pixels (teal). The
+result reads as "rainbow paint over teal", but the customer's mental
+model is "the foil is reflecting the teal" — so the holographic should
+TINT the existing background color, not replace it.
 
-```
-src/components/editor/CanvasStage.vue
-src/components/editor/EditorToolbar.vue
-src/composables/useCanvasEditor.ts
-src/services/orders.service.ts
-src/types/order.ts
-src/views/EditorView.vue
-src/workers/autoCrop.worker.ts
-src/utils/polygon.ts                     (NEW)
-```
+Concrete fix candidates for next session:
+1. **In the shader**: read the underlying base canvas pixel (would
+   require sampling the base canvas as a 4th texture in WebGL). Mix the
+   iridescent gradient with the base pixel via a tint operation
+   (multiply or color-blend) instead of writing iridescent rgba on
+   top.
+2. **Switch back to mix-blend-mode but smarter**: `mix-blend-mode:
+   color` blends only the HUE of the FX with the LIGHTNESS of the base
+   — preserves blacks/saturation but tints with iridescence. Worth
+   testing — would have addressed the original "screen washes black"
+   problem too.
+3. **Keep alpha blending but reduce shader output** in regions where
+   the base canvas isn't transparent (i.e. inside the artwork
+   silhouette). Already partly the case — but the cleaned-image bleed
+   ring counts as "artwork" pixels too, so the shader should detect
+   that and back off there.
 
-Companion uncommitted backend work (see `endossutdio_backend/CLAUDE.md`
-for details):
-- `apps/orders/services_smart_cut.py` (morph-open + cleaned RGBA URL)
-- `apps/orders/cut_path.py` (extracted `_walk_alpha_contour`)
-- `apps/orders/views.py`, `apps/orders/tests/test_smart_cut.py` (new
-  endpoint + 9 tests)
-- `Dockerfile`, `requirements/base.txt` (rembg + ONNX bake)
+Reproduction: gorilla on teal → smart-cut → pick `holografico`. Today
+the teal bleed becomes rainbow-overlaid; should stay teal-with-shimmer.
+
+**No uncommitted work** — everything from session 2026-05-10 is on
+`main` and pushed.
 
 ### Done — through 2026-05-03
 
@@ -761,14 +829,167 @@ Helpers in `tests/e2e/helpers/backend.ts` got `seedProduct` and
 
 **50/50 Playwright specs passing.**
 
+### Done (Session 2026-05-10 — smart-cut perf + holographic FX rebuild)
+
+Big session. Three major threads, all shipped + on `main`.
+
+#### A. Smart-cut margin slider — proper backend dilation (resolves the gorilla bug)
+
+The gorilla margin bug from EOD 2026-05-09 was the catalyst. Final fix:
+move the polygon expansion to the backend.
+
+- **Backend** (`apps/orders/services_smart_cut.py`):
+  - New `margin_mm` parameter (clamped to MIN_MARGIN_MM=5).
+  - Replaced PIL `MaxFilter` dilation with `scipy.ndimage.binary_dilation`
+    — same Minkowski-sum semantics, ~1000× faster on big kernels.
+  - Mask processing pipeline (morph-open → bleed dilate → contour walk)
+    runs on a downsampled 512-px-long-edge copy. Polygon coords scale
+    back to natural pixels before serializing. Final RGB compose stays
+    full-res.
+  - Cleaned RGBA preserves ORIGINAL source RGB pixels in the bleed
+    ring (gated by the dilated alpha mask) — gives the "background
+    extends outward" feel the customer asked for.
+  - Gaussian-smooth pass on both artwork and cut masks before contour
+    walking, controlled by new `smoothness` param (1-10, default 5).
+    Fills narrow concavities a vinyl plotter can't physically follow.
+  - rembg session warmed in a background thread at Django boot
+    (`apps/orders/apps.py`). First customer no longer eats the 25-40 s
+    cold-start.
+
+- **Frontend** (`src/composables/useHolographicFX.ts` and EditorView):
+  - Removed the broken JS `offsetPolygonOutward` path (per-vertex
+    normal-bisector offset is mathematically wrong on non-convex
+    polygons; produced self-intersection at large margins).
+  - Margin slider now re-calls the backend debounced 600 ms.
+  - Smoothness slider also re-calls when in smart-cut mode.
+  - Per-call axios timeout bumped to 90 s for cold starts.
+  - Slider min bumped to 5 mm (printable floor); first smart-cut
+    bumps margin to 15 mm if customer hadn't moved the slider.
+
+Real timings on the gorilla (warm session): **~2.3 s end-to-end**
+(was ~10-15 s warm + 33 s cold-start). Per-step timing logs left in
+service for regression detection.
+
+Companion frontend changes: bleed-margin slider, smoothness slider,
+new error states, 5 new Playwright specs.
+
+#### B. WebGL holographic FX layer (replaces 2D drawHolographicOverlay)
+
+The `drawHolographicOverlay` was a flat 2D screen-blend gradient.
+Replaced with a real GLSL fragment shader in a new 4th canvas layer.
+
+- New file: `src/composables/useHolographicFX.ts` — owns the WebGL
+  context, vertex/fragment shaders, polygon stencils (rasterized at
+  drawingBuffer DPR resolution to avoid 1-2px alpha-soft halos),
+  texture upload, rAF render loop, mouse-anchored shimmer.
+- New canvas in CanvasStage between base and ui layers. CSS
+  pointer-events:none so the UI canvas keeps focus.
+- Drives off `effectMode` ref in useCanvasEditor. EditorView maps the
+  customer's chosen material → mode via `effectModeFor()`.
+- 4 distinct material modes:
+  - `holographic` — cool foil (cyan/violet/pink/gold/lime), sharp
+    tight bands, focused hotspot
+  - `holographic_transparent` — same palette, stronger artwork-
+    interior reflections (no opaque white backing)
+  - `eggshell_holographic` — warm pastel palette (peach/rose/lavender/
+    cream/mint), broad SOFT bands (paper-printed feel)
+  - `luminescent` — phosphorescent yellow-green glow concentrated at
+    the cut edge + soft mouse hotspot. Only autonomous-time-driven
+    mode (gentle 3-second pulse).
+- Architecture: "clear lacquer over opaque ink". Artwork-interior FX
+  alpha is DRIVEN BY a sparse highlight pattern (3 diagonal bands ×
+  mouse-anchored hotspot) — most artwork pixels get FX alpha 0 →
+  artwork shows through 100% intact, blacks stay black. Bleed area
+  gets full holographic field.
+- Standard alpha blending (no mix-blend-mode tricks). Earlier attempts
+  with `screen` blend universally washed out artwork — screen() can't
+  preserve a black pixel under any non-black overlay.
+
+3 new Playwright specs verifying the FX layer mounts, doesn't block
+UI events, and switching across all 4 modes doesn't crash.
+
+#### C. AI macro reference textures (Track 2)
+
+Per-material photoreal grain textures on top of the procedural shader.
+Generated via DALL-E 3 (ChatGPT Plus) using prompts in
+`docs/material-textures-prompts.md`.
+
+- 4 PNGs in `src/assets/textures/`:
+  - `holografico_macro.png` (3.6 MB)
+  - `holografico_transparente_macro.png` (3.1 MB)
+  - `eggshell_holografico_macro.png` (3.3 MB)
+  - `luminiscente_macro.png` (2.8 MB)
+- Vite glob (`import.meta.glob('@/assets/textures/*_macro.png')`) auto-
+  discovers them — drop a new PNG and it picks up next reload.
+- Shader samples them as a multiply layer on top of the procedural
+  gradient. Per-material strength: foil 0.45, transparent 0.40,
+  eggshell 0.30, luminescent 0.20 (luminescent wants the glow to
+  dominate, not the particle texture).
+- Graceful no-op fallback when the PNG isn't bundled (early in the
+  session before generation, the code shipped without textures and
+  fell back to procedural-only without errors). 1 new Playwright spec
+  proves the fallback path.
+
+Tileability not verified — DALL-E 3 doesn't natively produce seamless
+tiles. Visible seams might appear at canvas midpoints; if so, run
+each PNG through a seamless-pass tool (Photoshop "Offset" filter or
+imgonline.com.ua's seamless tool) and replace.
+
+#### D. Bug fixes shipped along the way
+
+- `EditorView.vue:290` — `hasOriginalFile` computed used
+  `order.value?.files.some()` but missed the optional chain on
+  `.files`. Surfaced as "Cannot read properties of undefined (reading
+  'some')" toast during smart-cut reactivity churn. Fixed.
+- `apps/orders/views.py` — `OrderViewSet.partial_update` returned
+  `OrderUpdateSerializer.data` (write-only fields, no `uuid`).
+  Frontend stored that as `order.value`; subsequent code reading
+  `order.value.uuid` got undefined → POST to `/orders/undefined/...`.
+  Fixed to return `OrderSerializer.data` (mirrors the
+  ProductViewSet pattern).
+- WebGL FX boundary mismatch — stencil rasterized at CSS resolution
+  but WebGL canvas runs at DPR; LINEAR upsampling caused 1-2 px
+  iridescent fringe leaking past the cut polygon. Fixed by
+  rasterizing at `drawingBufferWidth/Height`. Plus the stencil now
+  uses the same `smoothPolygonPerimeter` + Chaikin trace the base
+  canvas uses, so the shapes align exactly.
+
+**Tests**: **54/54 functional Playwright specs passing** (was 50/50).
+
+#### Files added in 2026-05-10
+
+```
+src/composables/useHolographicFX.ts             NEW   WebGL FX composable
+src/assets/textures/*_macro.png                 NEW × 4
+docs/material-textures-prompts.md               NEW   AI prompt pack
+tests/e2e/holographic-fx.spec.ts                NEW   FX specs (4 tests)
+tests/e2e/smart-cut.spec.ts                     NEW   smart-cut specs (5 tests)
+endossutdio_backend/apps/orders/apps.py         MODIFIED rembg boot warmup
+endossutdio_backend/apps/orders/services_smart_cut.py  REWRITTEN scipy + downsample + Gaussian smoothing
+endossutdio_backend/apps/orders/views.py        MODIFIED smart-cut params + PATCH fix
+```
+
 ### Open follow-ups (non-blocking)
 
+- **Holographic should TINT the artwork's background, not overlay**
+  (carried into next session — see "Pick up here tomorrow" up top).
+  When the smart-cut bleed area carries colored source pixels (e.g.
+  gorilla on teal), today's WebGL FX paints rainbow over the teal.
+  Customer's mental model: the foil reflects the teal. Three fix
+  candidates documented in the pickup section.
+- **Macro PNG tileability** — DALL-E 3 outputs aren't seamless. May
+  show grid lines at canvas midpoints when the shader tiles 2× across
+  the surface. If visible, run each PNG through Photoshop's "Offset"
+  filter or imgonline.com.ua's seamless-pass tool. Note: the artwork
+  was generally noisy enough that seams might not actually show; QC
+  by eye first.
 - **Cut path SVG download from admin** — backend generates one at
   `transition_to_paid`; could surface a download link on the
   Dashboard's order detail. M3 nice-to-have.
 - **More materials** — if the shop adds finishes (e.g. matte vinyl,
   textured), add the texture PNG to `src/assets/textures/` and one
-  entry to `MATERIAL_TEXTURE_URLS`. ~5 LOC per material.
+  entry to `MATERIAL_TEXTURE_URLS`. ~5 LOC per material. For
+  holographic SKUs also generate a `_macro.png` per the prompt pack.
 - **`useAutoCrop.ts` (legacy main-thread)** still on disk but no
   longer imported. Keep for ~1 release in case the worker has a regression we
   need to diff against, then delete.
