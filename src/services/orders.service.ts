@@ -104,12 +104,27 @@ export const ordersService = {
 
   /**
    * Run "Recorte inteligente" — sync server-side rembg on the order's
-   * `original` file. Returns a polygon in image-natural pixels.
-   * Customer-blocking: ~3-5 s round-trip including the model inference.
-   * The server allows it on any order status (read-only operation).
+   * `original` file. Returns a polygon in image-natural pixels, dilated
+   * by `marginMm` of bleed. Customer-blocking: ~3-5 s on a warm rembg
+   * session, but the FIRST call after backend boot takes 25-40 s as the
+   * ONNX model loads and onnxruntime warms up.
+   *
+   * Per-call timeout overrides the api default (30 s) → 90 s. The first
+   * customer to hit smart-cut after a backend restart eats the warm-up;
+   * subsequent customers see normal latency. Without this override the
+   * cold-start always axios-timeouts, even though the server eventually
+   * returns 200 — the customer sees a confusing "Falló" toast.
+   *
+   * The server allows this on any order status (read-only operation).
+   * The server clamps marginMm to a 5 mm minimum (printable floor); pass
+   * any positive integer.
    */
-  async smartCut(uuid: string): Promise<SmartCutResponse> {
-    const response = await api.post(`/orders/${uuid}/smart-cut/`)
+  async smartCut(uuid: string, marginMm = 15): Promise<SmartCutResponse> {
+    const response = await api.post(
+      `/orders/${uuid}/smart-cut/`,
+      { margin_mm: marginMm },
+      { timeout: 90_000 },
+    )
     return response.data
   },
 

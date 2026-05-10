@@ -290,9 +290,13 @@ const SWATCH_CLASSES: Record<Material, string> = {
       Margen y forma
     </h2>
 
-    <!-- Bleed margin (mm) — outward offset around the auto-detected
-         contour. 15 mm is the print-shop default; some products want
-         more (10–25). The slider re-runs auto-crop debounced. -->
+    <!-- Bleed margin (mm) — outward offset around the detected silhouette.
+         Floor is 5 mm: below this the die-cutting tolerance alone consumes
+         the margin and the customer's design gets clipped at the edge.
+         The print shop wouldn't accept a 0 mm sticker anyway. 15 mm is the
+         default; some products want more (10–25). The slider re-runs
+         classical Auto cut debounced; for smart-cut it re-calls the
+         backend with the new margin. -->
     <div>
       <div class="mb-1 flex items-baseline justify-between gap-2">
         <label class="text-sm text-text">Margen alrededor</label>
@@ -300,7 +304,7 @@ const SWATCH_CLASSES: Record<Material, string> = {
       </div>
       <input
         type="range"
-        min="0"
+        min="5"
         max="30"
         step="1"
         :value="options.marginMm ?? 15"

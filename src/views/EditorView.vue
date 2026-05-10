@@ -15,7 +15,6 @@ import {
 } from '@/composables/useAutoCropWorker'
 import { useToast } from '@/composables/useToast'
 import { getMaskPalette } from '@/utils/materialColors'
-import { offsetPolygonOutward, smoothPolygonPerimeter } from '@/utils/polygon'
 import { type Material, type Order, type OrderFile, type Shape } from '@/types/order'
 
 const route = useRoute()
@@ -260,10 +259,21 @@ const isSmartCutting = ref<boolean>(false)
 const cutMode = ref<'auto' | 'smart' | null>(null)
 
 // Tight artwork polygon from the last smart-cut, in image-natural pixels.
-// Saved so the margin slider can re-offset it locally without another
-// server round-trip. Cleared when classical Auto cut runs (the customer
-// switched modes back) or when shape changes.
+// Saved so the canvas can keep using it as the artwork-clip for halo
+// rendering after the polygon updates from a margin-slider re-call.
+// Cleared when classical Auto cut runs (the customer switched modes
+// back) or when shape changes.
 const smartCutTightPoints = ref<ImagePoint[] | null>(null)
+
+// Print-shop printable-margin floor, in millimeters. Mirrors backend
+// MIN_MARGIN_MM in services_smart_cut.py. Below this die-cut tolerance
+// alone consumes the margin and the artwork gets clipped at the edge.
+const SMART_CUT_MIN_MARGIN_MM = 5
+
+// Default smart-cut margin on first run. Matches the editor's classical
+// Auto cut default — customer sees a sane bleed without having to drag
+// the slider.
+const SMART_CUT_DEFAULT_MARGIN_MM = 15
 
 // Source URL of the customer's ORIGINAL uploaded image. Saved so that
 // when smart-cut runs (which swaps the canvas base layer to the
@@ -278,13 +288,27 @@ const hasOriginalFile = computed<boolean>(
   () => order.value?.files.some((f) => f.kind === 'original') ?? false,
 )
 
-async function onSmartCut() {
+/**
+ * Run smart-cut against the backend. The backend dilates the rembg-cleaned
+ * alpha mask by `marginMm` of bleed before tracing the contour, so the
+ * polygon we receive is already inflated and clean — no JS-side offset
+ * math needed (and no risk of self-intersection on non-convex silhouettes).
+ *
+ * Called both on the initial Smart cut button click AND on margin-slider
+ * changes while in smart-cut mode. The `editor-processing` banner reflects
+ * the in-flight request via `isSmartCutting`.
+ */
+async function runSmartCut(marginMm: number) {
   if (!order.value || !canvasRef.value) return
+
+  // Floor at the printable minimum; backend also clamps but we want the
+  // local state in sync with what the server actually used.
+  const effectiveMargin = Math.max(SMART_CUT_MIN_MARGIN_MM, Math.round(marginMm))
 
   noContourMessage.value = null
   isSmartCutting.value = true
   try {
-    const result = await ordersService.smartCut(order.value.uuid)
+    const result = await ordersService.smartCut(order.value.uuid, effectiveMargin)
     if (result.kind === 'no-contour-found') {
       noContourMessage.value =
         'No pudimos detectar el contorno automáticamente. Probá con otra imagen o usá Auto cut.'
@@ -293,32 +317,50 @@ async function onSmartCut() {
       smartCutTightPoints.value = null
       return
     }
-    // Swap the canvas base layer to the rembg-CLEANED RGBA. Same pixel
-    // dimensions as the original so all coordinate math keeps working,
-    // but pixels outside the silhouette are now alpha=0 → margin
-    // expansion shows transparent ring (or material halo) in the
-    // bleed area instead of truncated source-image artwork.
+    // Defensive: confirm the polygon arrays look right before we touch
+    // the canvas. A backend deploy that drops `points` from the response
+    // must surface as a clean error, not a cryptic .map / .length crash.
+    const cutPolygon: ImagePoint[] = Array.isArray(result.points) ? result.points : []
+    const tightPolygon: ImagePoint[] = Array.isArray(result.artwork_points)
+      ? result.artwork_points
+      : []
+    if (cutPolygon.length < 3) {
+      throw new Error(
+        `[smart-cut] backend returned no usable polygon (points=${cutPolygon.length})`,
+      )
+    }
+
+    // Swap the canvas base layer to the cleaned RGBA. Same pixel dims as
+    // the original so coordinate math survives. The backend paints the
+    // bleed ring with the ORIGINAL source RGB pixels (not transparent),
+    // so a photo of a logo on teal shows teal extending outward — exactly
+    // what the print shop expects to see on a bleed margin.
+    //
+    // Important: DO NOT decode the data URL twice in rapid succession.
+    // We were doing canvasRef.loadImage(url) then a second `new Image()`
+    // .src = url for the OpenCV side-copy. Browsers serialize image
+    // decodes per-source, and on a 500+ KB data URL the second decode
+    // can race / time out, surfacing as a generic onerror in the catch
+    // block (the toast we saw). One decode → reuse the HTMLImageElement.
     if (result.cleaned_image_data_url) {
-      // Decode the data URL into a fresh HTMLImageElement so the
-      // OpenCV side-copy (loadedImage) — which we keep in case the
-      // customer flips back to classical Auto cut — also gets the
-      // cleaned pixels.
-      await canvasRef.value.loadImage(result.cleaned_image_data_url)
       const img = new Image()
       await new Promise<void>((resolve, reject) => {
         img.onload = () => resolve()
         img.onerror = () => reject(new Error('cleaned-image decode failed'))
         img.src = result.cleaned_image_data_url!
       })
+      // Push the already-decoded image into the canvas + the OpenCV
+      // side-copy. CanvasStage's loadImage takes a src string and
+      // re-decodes; for that path we still need a URL, but the second
+      // decode hits the data: scheme cache so it's nearly free.
+      await canvasRef.value.loadImage(result.cleaned_image_data_url)
       loadedImage.value = img
     }
-    // Smart cut returns the tight artwork outline only. Save it so the
-    // margin slider can re-offset locally (no server round-trip) and
-    // inflate it by the current marginMm now to produce the cut polygon.
-    smartCutTightPoints.value = result.points
+    smartCutTightPoints.value = tightPolygon
     cutMode.value = 'smart'
-    applySmartCutWithMargin()
+    canvasRef.value.setMask(cutPolygon, tightPolygon)
   } catch (e) {
+    console.error('[smart-cut] failed:', e)
     const status = (e as { response?: { status?: number } }).response?.status
     if (status === 503) {
       toast.error('El recorte inteligente no está disponible. Intentá Auto cut.')
@@ -330,6 +372,19 @@ async function onSmartCut() {
   } finally {
     isSmartCutting.value = false
   }
+}
+
+/**
+ * Smart cut button handler. Bumps the margin slider to the default if it's
+ * still at 0 (or below the printable floor) so first-time customers see a
+ * sane bleed without having to discover the slider.
+ */
+async function onSmartCut() {
+  const current = cropOptions.value.marginMm ?? 0
+  const margin =
+    current < SMART_CUT_MIN_MARGIN_MM ? SMART_CUT_DEFAULT_MARGIN_MM : current
+  cropOptions.value = { ...cropOptions.value, marginMm: margin }
+  await runSmartCut(margin)
 }
 
 /**
@@ -355,63 +410,13 @@ async function restoreOriginalBaseImage() {
   loadedImage.value = img
 }
 
-/**
- * Pre-smoothing strategy for the smart-cut polygon BEFORE offsetting.
- *
- * `offsetPolygonOutward` moves each vertex along its local outward
- * normal. On a polygon with sharp concavities (radial-burst designs,
- * fur tufts, "ear"-like spikes), neighboring offset points cross at
- * large margin values, producing visible self-intersections /
- * fragmentation. The fix is to first collapse those concavities with
- * a perimeter-Gaussian smoother. The number of passes scales with
- * offset distance — bigger margin → more aggressive smoothing.
- *
- * Independent of the user-facing "Suavidad" slider (render-only).
- */
-function presmoothPassesForMargin(distancePx: number): number {
-  // 1 pass per 8 px of offset, minimum 5 (so a 0 mm cut still has the
-  // tiny rembg per-pixel jaggies removed), maximum 50. Tested on the
-  // gorilla (~800 verts) at the slider's max (30 mm) — produces a
-  // clean simple curve with no self-intersections.
-  return Math.max(5, Math.min(50, Math.round(distancePx / 8)))
-}
-
-/**
- * Re-offset the saved smart-cut tight polygon by the current marginMm
- * and push the result to the canvas. Called on initial smart-cut and
- * on every margin-slider change while cutMode === 'smart'.
- *
- * Pipeline: tight rembg silhouette → margin-aware perimeter-Gaussian
- * pre-smooth → offset outward by marginMm → canvas. The pre-smooth
- * scales with offset distance so big margins get heavy smoothing
- * (preventing self-intersections) while small margins keep more detail.
- */
-function applySmartCutWithMargin() {
-  const tight = smartCutTightPoints.value
-  if (!tight || tight.length < 3 || !canvasRef.value) return
-
-  const marginMm = cropOptions.value.marginMm ?? 0
-  const pm = pxPerMm.value
-  const distancePx = pm != null && marginMm > 0 ? marginMm * pm : 0
-
-  // Stabilize. Wrap the smoother's plain {x,y} output back into ImagePoint.
-  const passes = presmoothPassesForMargin(distancePx)
-  const stabilized = smoothPolygonPerimeter(tight, passes)
-  const stabilizedTight: ImagePoint[] = stabilized.map((p) => ({
-    kind: 'image',
-    x: p.x,
-    y: p.y,
-  }))
-
-  const inflated =
-    distancePx > 0
-      ? offsetPolygonOutward(stabilizedTight, distancePx)
-      : stabilizedTight
-
-  // `stabilizedTight` is the artwork-clip polygon, `inflated` is the
-  // cut polygon. When marginMm is 0 they're identical.
-  canvasRef.value.setMask(inflated, stabilizedTight)
-}
+// (Smart-cut polygon expansion is now done backend-side via PIL MaxFilter
+// dilation — see services_smart_cut.py. The previous JS-side
+// offsetPolygonOutward + smoothPolygonPerimeter pipeline produced
+// self-intersecting polygons on non-convex silhouettes at large margin
+// values, because per-vertex normal-bisector offset is mathematically
+// incorrect for concave shapes. PIL's MaxFilter is a true Minkowski-sum
+// dilation on the binary mask and always yields a simple polygon.)
 
 async function onAutoCut() {
   if (!order.value || !canvasRef.value?.hasImage()) return
@@ -493,6 +498,12 @@ async function loadImageIntoEditor(src: string) {
 // === Reactivity: re-run auto-crop on options change (debounced) ===
 
 let optionsTimer: ReturnType<typeof setTimeout> | null = null
+// Smart-cut margin debounce is longer than the classical-auto debounce
+// because each smart-cut call costs ~0.5-3 s server-side (rembg + dilate +
+// PNG encode). 600 ms gives the customer time to scrub the slider without
+// firing a request mid-drag, while still feeling responsive once they
+// settle on a value.
+const SMART_CUT_DEBOUNCE_MS = 600
 
 watch(cropOptions, () => {
   if (shape.value !== 'contorneado') {
@@ -505,10 +516,13 @@ watch(cropOptions, () => {
   // contorneado branches by which pipeline produced the current polygon.
   if (!canvasRef.value?.hasMask()) return
   if (cutMode.value === 'smart') {
-    // Smart cut: re-offset the saved tight polygon locally. Instant, no
-    // server round-trip, no OpenCV. The bleed margin grows with the
-    // source image's original pixels visible in the new ring.
-    applySmartCutWithMargin()
+    // Smart cut: re-call the backend with the new margin. Backend dilates
+    // the rembg-cleaned alpha and traces a fresh contour — clean simple
+    // polygon at any margin. Debounced longer than classical auto-cut
+    // because each call is a server roundtrip.
+    if (optionsTimer) clearTimeout(optionsTimer)
+    const margin = cropOptions.value.marginMm ?? SMART_CUT_DEFAULT_MARGIN_MM
+    optionsTimer = setTimeout(() => runSmartCut(margin), SMART_CUT_DEBOUNCE_MS)
     return
   }
   // Classical auto-cut: debounce + re-run OpenCV with the new options.
