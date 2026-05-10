@@ -133,7 +133,11 @@ export function useCanvasEditor() {
    *  per-material visual treatment beyond the bleed halo color, which
    *  is owned separately by the mask layer. */
   const effectMode = ref<
-    'holographic' | 'holographic_transparent' | 'luminescent' | null
+    | 'holographic'
+    | 'holographic_transparent'
+    | 'luminescent'
+    | 'eggshell_holographic'
+    | null
   >(null)
   /** UI smoothing slider value (2–10). Drives perimeter-Gaussian passes
    *  applied to the polygon before rendering. The minimum is 2 — below
@@ -519,7 +523,12 @@ export function useCanvasEditor() {
    *  caller (EditorView) maps the material identifier to one of the
    *  concrete modes. `null` = no FX. */
   function setEffectMode(
-    mode: 'holographic' | 'holographic_transparent' | 'luminescent' | null,
+    mode:
+      | 'holographic'
+      | 'holographic_transparent'
+      | 'luminescent'
+      | 'eggshell_holographic'
+      | null,
   ): void {
     effectMode.value = mode
   }

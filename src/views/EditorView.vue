@@ -580,22 +580,27 @@ watch(smoothingSlider, (v) => {
  *  paints over the artwork + bleed; bleed-halo color is owned separately
  *  by the mask layer and read from MATERIAL_TEXTURE_URLS.
  *
- *  - holografico              → standard iridescent shimmer
- *  - holografico_transparente → same shimmer, but with the canvas checker
- *                              showing through the artwork (no opaque
- *                              white vinyl backing)
- *  - eggshell_holografico     → also holographic (eggshell finish is
- *                              orthogonal — handled by the texture halo)
- *  - luminiscente             → soft greenish-yellow glow that pulses
+ *  - holografico              → cool foil, sharp iridescent bands
+ *  - holografico_transparente → cool foil with stronger artwork-interior
+ *                              reflections (no opaque white backing)
+ *  - eggshell_holografico     → warm pastel foil, broad soft bands
+ *                              (paper-printed feel; halo is eggshell)
+ *  - luminiscente             → phosphorescent greenish-yellow glow
+ *                              concentrated at the cut edge
  *  - everything else          → no FX overlay; mask halo + base image
  *                              are sufficient
  */
 function effectModeFor(
   m: Material | '',
-): 'holographic' | 'holographic_transparent' | 'luminescent' | null {
+):
+  | 'holographic'
+  | 'holographic_transparent'
+  | 'luminescent'
+  | 'eggshell_holographic'
+  | null {
   if (m === 'holografico') return 'holographic'
   if (m === 'holografico_transparente') return 'holographic_transparent'
-  if (m === 'eggshell_holografico') return 'holographic'
+  if (m === 'eggshell_holografico') return 'eggshell_holographic'
   if (m === 'luminiscente') return 'luminescent'
   return null
 }

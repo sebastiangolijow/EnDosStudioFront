@@ -139,7 +139,12 @@ defineExpose({
   setHolographicMaterial: (holographic: boolean) =>
     setHolographicMaterial(holographic),
   setEffectMode: (
-    mode: 'holographic' | 'holographic_transparent' | 'luminescent' | null,
+    mode:
+      | 'holographic'
+      | 'holographic_transparent'
+      | 'luminescent'
+      | 'eggshell_holographic'
+      | null,
   ) => setEffectMode(mode),
   setSmoothingSlider: (value: number) => setSmoothingSlider(value),
   getMaskAsBlob: () => getMaskAsBlob(),

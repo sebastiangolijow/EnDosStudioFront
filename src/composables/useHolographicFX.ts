@@ -98,7 +98,15 @@ float noise(vec2 p) {
   );
 }
 
-vec3 iridescence(float t) {
+// Each material has its own palette — what makes "holografico" feel
+// different from "eggshell holografico" beyond shader parameters is
+// the COLOR vocabulary. Real holographic foil cycles through the cool
+// neon side of the spectrum (cyan/violet/magenta/gold). Eggshell foil
+// — printed on a warm cream/off-white substrate — cycles through more
+// muted pastel tones (peach/rose/lavender/cream).
+//
+// Caller picks via u_palette uniform: 0 = cool foil, 1 = warm pastel.
+vec3 iridescence_cool(float t) {
   t = fract(t);
   vec3 cyan   = vec3(0.133, 0.827, 0.933);  // #22D3EE
   vec3 violet = vec3(0.659, 0.333, 0.969);  // #A855F7
@@ -109,6 +117,23 @@ vec3 iridescence(float t) {
   else if (t < 0.5)  return mix(violet, pink,   (t - 0.25) * 4.0);
   else if (t < 0.75) return mix(pink,   gold,   (t - 0.5) * 4.0);
   else               return mix(gold,   lime,   (t - 0.75) * 4.0);
+}
+
+// Eggshell holographic palette — warm pastels. Reads as a softer,
+// premium-paper-printed foil; muted enough that the base eggshell
+// texture (in the bleed halo) still dominates, with the foil only
+// providing subtle iridescence where light catches it.
+vec3 iridescence_warm(float t) {
+  t = fract(t);
+  vec3 peach   = vec3(1.000, 0.847, 0.690);  // soft peach
+  vec3 rose    = vec3(0.973, 0.682, 0.690);  // dusty rose
+  vec3 lavender= vec3(0.831, 0.737, 0.945);  // pale lavender
+  vec3 cream   = vec3(0.984, 0.918, 0.812);  // warm cream
+  vec3 mint    = vec3(0.792, 0.945, 0.882);  // pale mint
+  if (t < 0.25)      return mix(peach,    rose,     t * 4.0);
+  else if (t < 0.5)  return mix(rose,     lavender, (t - 0.25) * 4.0);
+  else if (t < 0.75) return mix(lavender, cream,    (t - 0.5) * 4.0);
+  else               return mix(cream,    mint,     (t - 0.75) * 4.0);
 }
 
 // === Holographic mode ===
@@ -141,7 +166,44 @@ vec3 iridescence(float t) {
 //     when you tilt it. THIS is what defines the "highlight regions"
 //     — outside these bands, the artwork has alpha=0 protection.
 //   - Edge bloom — a soft glow JUST INSIDE the cut polygon boundary
-vec4 mode_holographic(float in_cut, float in_artwork, bool transparent_mode) {
+// Per-material parameter struct — picked from a switch on u_mode in
+// main(). Centralizes the differences between holografico,
+// holografico_transparente, eggshell_holografico in one place so it's
+// obvious WHAT changes between materials (palette, band sharpness,
+// hotspot focus, max alpha).
+struct MaterialParams {
+  // 0 = cool palette (cyan/violet/pink/gold/lime), 1 = warm pastel
+  int   palette_id;
+  // Diagonal band sharpness. Lower = softer/wider bands (eggshell);
+  // higher = sharper/tighter bands (foil).
+  float band_sharpness_1;
+  float band_sharpness_2;
+  float band_sharpness_3;
+  // Hotspot focus exponent. Higher = tighter hot spot at the mouse.
+  // Lower = broader spread.
+  float hotspot_focus;
+  // Max alpha contribution over the artwork interior at peak highlight.
+  // 0.55 = standard foil. Higher for "transparent" SKUs (more visible
+  // through). Lower for "eggshell" (subtler).
+  float artwork_alpha_peak;
+  // Highlight color blend toward white. Foil = vivid (low blend, ~0.5);
+  // eggshell = soft (more white, ~0.8); makes the bands read like soft
+  // diffused sheen instead of crisp specular.
+  float highlight_white_mix;
+  // Bleed alpha — full holographic in the bleed ring.
+  float bleed_alpha;
+};
+
+vec3 sample_iridescence(int palette_id, float t) {
+  if (palette_id == 1) return iridescence_warm(t);
+  return iridescence_cool(t);
+}
+
+vec4 mode_holographic_with_params(
+  float in_cut,
+  float in_artwork,
+  MaterialParams p
+) {
   // Iridescent gradient parameter. Mouse drives the phase shift —
   // moving the cursor slides which colors are visible across the
   // sticker, simulating "tilting the foil to catch light at a
@@ -153,7 +215,7 @@ vec4 mode_holographic(float in_cut, float in_artwork, bool transparent_mode) {
   float diag = (v_uv.x + v_uv.y) * 0.5;
   float phase = (u_mouse.x - 0.5) * 1.5 + (u_mouse.y - 0.5) * 0.8;
   float t = diag + warp + phase;
-  vec3 grad = iridescence(t);
+  vec3 grad = sample_iridescence(p.palette_id, t);
 
   // === Specular highlight pattern ===
   //
@@ -173,115 +235,173 @@ vec4 mode_holographic(float in_cut, float in_artwork, bool transparent_mode) {
   // narrow streaks, not broad swaths. That's the "sparse highlight"
   // architecture.
 
-  // Hot spot at the mouse position. Falls off quickly so it's a
-  // localized "where the light is" indicator, not a general wash.
+  // Hot spot at the mouse position. p.hotspot_focus controls the
+  // tightness — foil = sharp small spot, eggshell = broader softer spot.
   vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
   float mouse_dist = distance(v_uv, mouse_pos);
-  float hotspot = exp(-mouse_dist * mouse_dist * 8.0);
+  float hotspot = exp(-mouse_dist * mouse_dist * p.hotspot_focus);
 
-  // Diagonal sweep bands — narrow streaks across the surface.
-  // band_axis is positioned along an angle; shifted slightly by the
-  // mouse so they "rotate" as the customer tilts. fract() makes them
-  // periodic; exp() of a squared distance to the band center makes
-  // each band narrow and bright.
+  // Diagonal sweep bands — narrow streaks across the surface. Sharpness
+  // per material via p.band_sharpness_*: foil bands are tight + crisp;
+  // eggshell bands are wide + soft so the iridescence reads diffuse.
   float band_axis = v_uv.x * 1.2 - v_uv.y * 0.6 + (u_mouse.x - 0.5) * 0.3;
-  float b1 = exp(-pow(fract(band_axis * 1.4 + 0.10) - 0.5, 2.0) * 80.0);
-  float b2 = exp(-pow(fract(band_axis * 2.1 + 0.55) - 0.5, 2.0) * 120.0);
-  float b3 = exp(-pow(fract(band_axis * 3.0 + 0.85) - 0.5, 2.0) * 160.0);
+  float b1 = exp(-pow(fract(band_axis * 1.4 + 0.10) - 0.5, 2.0) * p.band_sharpness_1);
+  float b2 = exp(-pow(fract(band_axis * 2.1 + 0.55) - 0.5, 2.0) * p.band_sharpness_2);
+  float b3 = exp(-pow(fract(band_axis * 3.0 + 0.85) - 0.5, 2.0) * p.band_sharpness_3);
   float bands = b1 * 0.65 + b2 * 0.45 + b3 * 0.30;
 
-  // The combined highlight mask. Bands modulated by the hotspot —
-  // bands are brightest near the cursor and fade out away from it.
-  // This focuses the reflection energy on where the light is hitting,
-  // matching real specular behavior.
+  // Combined highlight mask. Bands × hotspot focuses reflection energy
+  // near the cursor — matches real specular behavior.
   float highlight = clamp(bands * (0.4 + hotspot * 0.9), 0.0, 1.0);
 
-  // Soft cut-edge bloom — a thin band of iridescent diffusion JUST
-  // INSIDE the polygon boundary. Cheap proxy for the diffused light
-  // wrap visible on the reference. Stencil's LINEAR filter gives us a
-  // soft 0..1 transition we can grab here.
+  // Soft cut-edge bloom — thin diffused-light band just inside the
+  // polygon boundary. Same in all modes.
   float edge_bloom = smoothstep(0.0, 0.45, in_cut)
                    * (1.0 - smoothstep(0.45, 1.0, in_cut));
 
-  // === Composing for the bleed area ===
-  //
-  // No artwork to preserve here — full holographic surface, vivid
-  // colors, bright highlights where they fall.
+  // === Bleed area — full holographic surface ===
   vec3 bleed_color = mix(grad, WHITE, clamp(highlight * 0.5, 0.0, 1.0));
-  // Multiplicative grain — modulates intensity instead of ADDING
-  // brightness. Preserves color.
   float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.06;
   bleed_color *= grain_mul;
-  bleed_color += vec3(edge_bloom) * 0.12;  // subtle inner-edge glow
-  float bleed_alpha = 0.95;
+  bleed_color += vec3(edge_bloom) * 0.12;
 
-  // === Composing for the artwork interior ===
-  //
-  // Sparse highlights only. Most pixels: alpha = 0 → artwork is
-  // fully visible underneath, with all its blacks and saturation
-  // intact. Highlight regions: write iridescent color at moderate
-  // alpha, simulating a reflection on the laminate surface.
-  vec3 artwork_color = grad;
-  // Brighten the highlight pattern toward white so it reads as a
-  // light reflection. Outside the highlights this is zero, so the
-  // artwork color is moot (alpha will be 0 there).
-  artwork_color = mix(artwork_color, WHITE, clamp(highlight * 0.7, 0.0, 1.0));
-  // Artwork-interior alpha is DRIVEN by the highlight pattern.
-  // Maximum alpha 0.55 even at peak highlights so the artwork still
-  // reads through clearly. Outside the bands, alpha goes to 0 → the
-  // artwork is fully untouched. This is the key change.
-  float artwork_alpha = highlight * 0.55;
+  // === Artwork interior — sparse highlights, artwork preserved ===
+  vec3 artwork_color = mix(
+    grad, WHITE,
+    clamp(highlight * p.highlight_white_mix, 0.0, 1.0)
+  );
+  float artwork_alpha = highlight * p.artwork_alpha_peak;
 
-  // Transparent-mode tweak: under "no white vinyl" the laminate is
-  // the only thing on top of the design, so highlights should be a
-  // touch stronger over the artwork.
-  if (transparent_mode) {
-    artwork_alpha = highlight * 0.70;
-  }
-
-  // Combine the two regions weighted by stencil. The shader writes
-  // either bleed_color@bleed_alpha (where in_artwork ≈ 0) or
-  // artwork_color@artwork_alpha (where in_artwork ≈ 1), with smooth
-  // interpolation at the artwork edge.
+  // Compose by stencil weighting.
   float bleed_factor = in_cut * (1.0 - in_artwork);
   float artwork_factor = in_cut * in_artwork;
   vec3 rgb = bleed_color * bleed_factor + artwork_color * artwork_factor;
-  float alpha = bleed_alpha * bleed_factor + artwork_alpha * artwork_factor;
+  float alpha = p.bleed_alpha * bleed_factor + artwork_alpha * artwork_factor;
 
   return vec4(rgb, alpha);
 }
 
+// === Per-material parameter presets ===
+//
+// Each material gets distinct shader behavior so the customer sees a
+// real difference picking holografico vs holografico_transparente vs
+// eggshell_holografico. The parameter ranges were tuned by reading
+// what the previous unified shader did and adjusting in directions
+// that match each material's physical character.
+
+MaterialParams params_holografico() {
+  // Cool foil — vivid neon palette, sharp tight bands, focused hot
+  // spot, moderate highlight whiteness. The "default" holographic.
+  return MaterialParams(
+    0,        // palette_id: cool
+    80.0,     // band_sharpness_1
+    120.0,    // band_sharpness_2
+    160.0,    // band_sharpness_3
+    8.0,      // hotspot_focus (tight)
+    0.55,     // artwork_alpha_peak
+    0.7,      // highlight_white_mix
+    0.95      // bleed_alpha
+  );
+}
+
+MaterialParams params_holografico_transparente() {
+  // Same cool palette + sharp bands as holografico, but stronger
+  // visibility of iridescence over the artwork because there's no
+  // opaque white vinyl backing. Higher artwork_alpha_peak. Slightly
+  // brighter highlight (more white-mix) for the "translucent foil
+  // catching light from both sides" feel.
+  return MaterialParams(
+    0,        // palette_id: cool
+    100.0,    // band_sharpness_1 (slightly tighter for "thin clear film" feel)
+    140.0,    // band_sharpness_2
+    180.0,    // band_sharpness_3
+    6.0,      // hotspot_focus (slightly broader — more spread)
+    0.78,     // artwork_alpha_peak (much higher than opaque)
+    0.85,     // highlight_white_mix (more bright peaks)
+    0.85      // bleed_alpha (slightly less than opaque — more transparent)
+  );
+}
+
+MaterialParams params_eggshell_holografico() {
+  // Warm pastel palette, broad SOFT bands, broad hotspot, low alpha
+  // peak. Reads as a paper-printed foil with diffuse iridescence —
+  // the eggshell substrate is the dominant character; the foil only
+  // adds a subtle warm sheen. The eggshell PNG halo in the bleed
+  // (drawn by the mask layer) carries the cream-paper texture.
+  return MaterialParams(
+    1,        // palette_id: warm
+    25.0,     // band_sharpness_1 (much softer/broader — diffuse)
+    35.0,     // band_sharpness_2
+    50.0,     // band_sharpness_3
+    4.0,      // hotspot_focus (broad)
+    0.38,     // artwork_alpha_peak (subtler — paper foil isn't as bright)
+    0.5,      // highlight_white_mix (less bright — soft pastel sheen)
+    0.55      // bleed_alpha (lower so the eggshell texture halo dominates)
+  );
+}
+
 // === Luminescent mode ===
 //
-// Glow-in-the-dark vinyl. No iridescence — solid greenish-yellow halo
-// concentrated in the bleed ring with a gentle pulse that breathes
-// over ~3 seconds. Faint over the artwork (so the design still reads
-// dominant) but visible enough to communicate "this material glows."
+// Glow-in-the-dark vinyl. Now follows the same "laminate over opaque
+// ink" architecture as holographic — artwork preserved, glow only at
+// edges + mouse hotspot. The previous version had a uniform alpha
+// overlay over the whole artwork which washed out the design (the same
+// bug we just fixed for holographic; this is the matching fix here).
+//
+// Visual signal:
+//   - Edge bloom — strong greenish-yellow halo where the cut polygon
+//     boundary diffuses inward (the "phosphorescent rim" of glow
+//     vinyl seen in low light)
+//   - Mouse-anchored brightening — a subtle pulse follows the cursor
+//     so the customer sees the glow react like a real material
+//   - Bleed ring — solid greenish-yellow at high alpha, gentle pulse
+//   - Artwork interior — alpha 0 except at the immediate cut-edge
+//     band, so the gorilla's blacks/colors stay intact
 vec4 mode_luminescent(float in_cut, float in_artwork) {
-  // Soft pulse — 0.85..1.0 over a ~3s cycle.
+  // Slow autonomous pulse — 0.92..1.00 over a ~3s cycle. The only
+  // mode where time-driven animation is appropriate (it's literally
+  // a phosphorescent material with reactive luminance).
   float pulse = 0.92 + 0.08 * sin(u_time * 2.1);
 
-  // Color: vivid yellow-green on the inside, fading to a pale teal at
-  // the cut polygon boundary. That's the recognizable "phosphorescent"
-  // color of glow vinyl in low light.
-  vec3 inner = vec3(0.7, 1.0, 0.4);   // bright yellow-green
-  vec3 outer = vec3(0.5, 0.95, 0.85); // pale teal-cyan
+  // Phosphorescent palette — bright yellow-green with a teal cool
+  // tone. Same as before; this part was correct.
+  vec3 inner = vec3(0.70, 1.00, 0.40);
+  vec3 outer = vec3(0.50, 0.95, 0.85);
 
-  // Distance-from-center within the bleed ring drives the inner→outer
-  // mix. Approximate via a quick stencil sample at a slightly larger
-  // sample radius — but cheaper just to use the artwork mask as a
-  // proxy: closer to artwork = inner, further = outer. Smoothstep for
-  // a soft transition.
+  // Mouse-anchored hot spot — broad, soft. Concentrates the "fresh
+  // energy" near the cursor.
+  vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
+  float hotspot = exp(-distance(v_uv, mouse_pos) * distance(v_uv, mouse_pos) * 5.0);
+
+  // Edge band — wider than the holographic edge_bloom because the
+  // glow visibly diffuses inward on real glow vinyl. This is what
+  // sells the "this material glows" signal — the gorilla appears to
+  // be CARVED OUT of the glow, with luminance leaking around its edge.
+  float edge_band = smoothstep(0.0, 0.6, in_cut)
+                  * (1.0 - smoothstep(0.6, 1.0, in_cut));
+
+  // Color mix — inner toward the artwork, outer toward the bleed
+  // boundary. Adds gentle pulse modulation.
   float ring_t = smoothstep(0.0, 1.0, in_artwork);
   vec3 glow_color = mix(outer, inner, ring_t) * pulse;
 
-  float bleed_mask = in_cut * (1.0 - in_artwork);
-  float artwork_mask = in_cut * in_artwork;
+  // === Bleed area — solid glow halo, full alpha ===
+  vec3 bleed_color = glow_color;
+  float bleed_alpha = 0.85 * (0.85 + hotspot * 0.15);
 
-  // Strong in the bleed (the "halo"), faint over the artwork.
-  vec3 rgb = glow_color * bleed_mask + glow_color * artwork_mask * 0.4;
-  float a  = 0.7 * bleed_mask + 0.18 * artwork_mask;
-  return vec4(rgb, a);
+  // === Artwork interior — alpha mostly zero, visible only at edge ===
+  // The phosphorescent leak at the artwork's cut-line boundary is what
+  // sells "glow material". Outside that thin band, the artwork shows
+  // through 100% intact.
+  float artwork_glow_alpha = edge_band * 0.55 + hotspot * 0.10;
+  vec3 artwork_color = glow_color * 1.05;
+
+  float bleed_factor = in_cut * (1.0 - in_artwork);
+  float artwork_factor = in_cut * in_artwork;
+  vec3 rgb = bleed_color * bleed_factor + artwork_color * artwork_factor;
+  float alpha = bleed_alpha * bleed_factor + artwork_glow_alpha * artwork_factor;
+
+  return vec4(rgb, alpha);
 }
 
 void main() {
@@ -293,13 +413,20 @@ void main() {
     return;
   }
 
+  // Dispatch by mode.
+  //   1 = holografico (cool foil)
+  //   2 = holografico_transparente (cool foil, stronger over artwork)
+  //   3 = luminescent
+  //   4 = eggshell_holografico (warm pastel, soft diffuse foil)
   vec4 col;
-  if (u_mode > 2.5) {
+  if (u_mode > 3.5) {
+    col = mode_holographic_with_params(in_cut, in_artwork, params_eggshell_holografico());
+  } else if (u_mode > 2.5) {
     col = mode_luminescent(in_cut, in_artwork);
   } else if (u_mode > 1.5) {
-    col = mode_holographic(in_cut, in_artwork, true);
+    col = mode_holographic_with_params(in_cut, in_artwork, params_holografico_transparente());
   } else if (u_mode > 0.5) {
-    col = mode_holographic(in_cut, in_artwork, false);
+    col = mode_holographic_with_params(in_cut, in_artwork, params_holografico());
   } else {
     col = vec4(0.0);
   }
@@ -629,13 +756,26 @@ export function useHolographicFX() {
    *  visible alpha), so standard alpha blend gives us "shiny laminate
    *  reflections on opaque ink" — which is what real holographic
    *  vinyl does.
+   *
+   *  Mode value mapping (also referenced in the fragment shader's
+   *  main() dispatch):
+   *    1 = holografico (cool foil, sharp bands)
+   *    2 = holografico_transparente (cool foil, stronger over artwork)
+   *    3 = luminescent (greenish-yellow phosphorescent glow)
+   *    4 = eggshell_holografico (warm pastel, soft diffuse foil)
    */
   function setMode(
-    m: 'holographic' | 'holographic_transparent' | 'luminescent' | null,
+    m:
+      | 'holographic'
+      | 'holographic_transparent'
+      | 'luminescent'
+      | 'eggshell_holographic'
+      | null,
   ) {
     if (m === 'holographic') modeValue = 1
     else if (m === 'holographic_transparent') modeValue = 2
     else if (m === 'luminescent') modeValue = 3
+    else if (m === 'eggshell_holographic') modeValue = 4
     else modeValue = 0
     enabled.value = modeValue > 0
     targetIntensity = modeValue > 0 ? 1 : 0
