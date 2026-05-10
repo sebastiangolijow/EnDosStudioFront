@@ -46,15 +46,17 @@ const cropOptions = ref<AutoCropOptions>({
   marginMm: 15, // default bleed margin (typical sticker-print convention)
 })
 const maskVisible = ref<boolean>(true)
-// Cut-line smoothing slider value (2–10). Floor is 2 because below that,
-// per-vertex normal-offset self-intersections produce visible spikes/loops
-// in the cut line — see EditorInspector for the longer rationale.
-// Default 3 = subtle smoothing that keeps silhouette detail.
-// Persisted only in editor session state for now — the customer's choice
-// doesn't ride to the backend (the printed mask matches whatever's on
-// screen, so the cutter sees the smoothed shape via the uploaded
-// die_cut_mask PNG).
-const smoothingSlider = ref<number>(3)
+// Cut-line smoothing slider value (2–10). For classical Auto cut this
+// maps to client-side perimeter-Gaussian render passes; for smart-cut
+// it ALSO maps to a server-side binary-mask Gaussian blur (sigma)
+// applied before the contour walker — that's what produces a vinyl-
+// cuttable line on detailed silhouettes (fur, hair, decoration spikes).
+// Default 6 lands mid-range so first-time smart-cut customers see a
+// properly rounded cut without having to hunt for the slider. Floor is
+// 2 because below that, classical Auto cut's per-vertex normal-offset
+// produces self-intersection spikes — irrelevant for smart-cut but the
+// shared slider stays consistent.
+const smoothingSlider = ref<number>(6)
 // Show the artwork against the canvas's checker background instead of its
 // original (likely white) background. Matches the reference shop's UX —
 // once a cut polygon exists, the customer sees what the printed sticker
@@ -290,25 +292,30 @@ const hasOriginalFile = computed<boolean>(
 
 /**
  * Run smart-cut against the backend. The backend dilates the rembg-cleaned
- * alpha mask by `marginMm` of bleed before tracing the contour, so the
- * polygon we receive is already inflated and clean — no JS-side offset
- * math needed (and no risk of self-intersection on non-convex silhouettes).
+ * alpha mask by `marginMm` of bleed and Gaussian-smooths it by `smoothness`
+ * before tracing the contour, so the polygon we receive is already
+ * inflated, smoothed, and a vinyl plotter can physically follow it.
  *
- * Called both on the initial Smart cut button click AND on margin-slider
- * changes while in smart-cut mode. The `editor-processing` banner reflects
- * the in-flight request via `isSmartCutting`.
+ * Called on the initial Smart cut button click AND on margin/smoothness
+ * slider changes while in smart-cut mode. The `editor-processing` banner
+ * reflects the in-flight request via `isSmartCutting`.
  */
-async function runSmartCut(marginMm: number) {
+async function runSmartCut(marginMm: number, smoothness: number) {
   if (!order.value || !canvasRef.value) return
 
   // Floor at the printable minimum; backend also clamps but we want the
   // local state in sync with what the server actually used.
   const effectiveMargin = Math.max(SMART_CUT_MIN_MARGIN_MM, Math.round(marginMm))
+  const effectiveSmoothness = Math.max(1, Math.min(10, Math.round(smoothness)))
 
   noContourMessage.value = null
   isSmartCutting.value = true
   try {
-    const result = await ordersService.smartCut(order.value.uuid, effectiveMargin)
+    const result = await ordersService.smartCut(
+      order.value.uuid,
+      effectiveMargin,
+      effectiveSmoothness,
+    )
     if (result.kind === 'no-contour-found') {
       noContourMessage.value =
         'No pudimos detectar el contorno automáticamente. Probá con otra imagen o usá Auto cut.'
@@ -384,7 +391,7 @@ async function onSmartCut() {
   const margin =
     current < SMART_CUT_MIN_MARGIN_MM ? SMART_CUT_DEFAULT_MARGIN_MM : current
   cropOptions.value = { ...cropOptions.value, marginMm: margin }
-  await runSmartCut(margin)
+  await runSmartCut(margin, smoothingSlider.value)
 }
 
 /**
@@ -522,7 +529,10 @@ watch(cropOptions, () => {
     // because each call is a server roundtrip.
     if (optionsTimer) clearTimeout(optionsTimer)
     const margin = cropOptions.value.marginMm ?? SMART_CUT_DEFAULT_MARGIN_MM
-    optionsTimer = setTimeout(() => runSmartCut(margin), SMART_CUT_DEBOUNCE_MS)
+    optionsTimer = setTimeout(
+      () => runSmartCut(margin, smoothingSlider.value),
+      SMART_CUT_DEBOUNCE_MS,
+    )
     return
   }
   // Classical auto-cut: debounce + re-run OpenCV with the new options.
@@ -532,7 +542,27 @@ watch(cropOptions, () => {
 
 watch(maskVisible, (v) => canvasRef.value?.setMaskVisible(v))
 watch(removeBackground, (v) => canvasRef.value?.setRemoveBackground(v))
-watch(smoothingSlider, (v) => canvasRef.value?.setSmoothingSlider(v))
+
+// Smoothing slider has dual meaning by cut mode:
+//   - Classical Auto cut: client-side perimeter-Gaussian render smoothing
+//     (the canvas redraws with the new smoothed polygon). Cheap, instant.
+//   - Smart cut: ALSO re-calls the backend so the cut polygon itself is
+//     smoothed at the source (binary-mask Gaussian blur before contour
+//     walk). The mask-blur path is what produces a vinyl-cuttable line —
+//     client-side smoothing alone can't fill deep silhouette concavities.
+// Same 600 ms debounce as the margin slider so quick scrubbing doesn't
+// fire a request per tick.
+watch(smoothingSlider, (v) => {
+  canvasRef.value?.setSmoothingSlider(v)
+  if (cutMode.value === 'smart' && shape.value === 'contorneado') {
+    if (optionsTimer) clearTimeout(optionsTimer)
+    const margin = cropOptions.value.marginMm ?? SMART_CUT_DEFAULT_MARGIN_MM
+    optionsTimer = setTimeout(
+      () => runSmartCut(margin, v),
+      SMART_CUT_DEBOUNCE_MS,
+    )
+  }
+})
 
 // === Material + relief: persist to draft, repaint halo ===
 
