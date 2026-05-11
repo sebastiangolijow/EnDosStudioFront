@@ -57,11 +57,15 @@ const maskVisible = ref<boolean>(true)
 // produces self-intersection spikes — irrelevant for smart-cut but the
 // shared slider stays consistent.
 const smoothingSlider = ref<number>(6)
-// Show the artwork against the canvas's checker background instead of its
-// original (likely white) background. Matches the reference shop's UX —
-// once a cut polygon exists, the customer sees what the printed sticker
-// will actually look like (no rectangular page bg around it).
-const removeBackground = ref<boolean>(true)
+// "Quitar fondo" defaults OFF — the editor preview shows the customer's
+// source image edge-to-edge inside the cut polygon (smart-cut bleed
+// background extends outward visibly). The customer opts in to clipping
+// the base to the tight artwork silhouette when they want to preview
+// the material halo in the bleed margin. This matches the reference
+// shop's default behavior and is what makes the holographic / fluorescent
+// FX read against the original-image-background ground instead of the
+// checker.
+const removeBackground = ref<boolean>(false)
 
 // Material + relief + shape state lives in the editor view (not the canvas
 // composable) because they're draft-Order properties, not canvas concerns.

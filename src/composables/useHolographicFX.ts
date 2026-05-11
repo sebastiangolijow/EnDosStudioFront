@@ -592,16 +592,21 @@ MaterialParams params_eggshell_holografico() {
 //   - Edge band — luminance leaks INWARD from the cut boundary, a
 //     diagnostic signal that "this material glows"
 vec4 mode_luminescent(float in_cut, float in_artwork) {
-  // Slow autonomous pulse — 0.92..1.04 over a ~3s cycle. Peak briefly
-  // pushes above 1.0 so the material reads as actively emitting at
-  // pulse highs (vs statically tinted).
-  float pulse = 0.94 + 0.10 * sin(u_time * 2.1);
+  // Two-octave autonomous pulse — slow breathing × fast flutter. Range
+  // ~0.95..1.10. Peak frames briefly push above 1.0 so the material
+  // reads as ACTIVELY EMITTING, not pigmented. Real fluorescent vinyl
+  // under fluctuating UV does pulse visibly like this.
+  float pulse_slow = 0.97 + 0.08 * sin(u_time * 2.1);
+  float pulse_fast = 1.0 + 0.04 * sin(u_time * 7.8);
+  float pulse = pulse_slow * pulse_fast;
 
-  // Phosphorescent palette — brighter than before but not blown out.
-  // Inner yellow-green pushed to (0.78, 1.00, 0.35) for a more
-  // saturated fluorescent peak; outer cyan-green slightly lifted.
-  vec3 inner_glow = vec3(0.78, 1.00, 0.35);
-  vec3 outer_glow = vec3(0.55, 1.00, 0.88);
+  // Electric fluorescent palette — pushed to saturated near-spectral
+  // peaks. Inner = pure spectral green-yellow (the "highlighter under
+  // black light" peak chroma — green dominates with a yellow leak,
+  // minimal red so it reads as light not pigment). Outer = cyan-green
+  // at high luminance so the boundary is also actively emissive.
+  vec3 inner_glow = vec3(0.82, 1.00, 0.25);
+  vec3 outer_glow = vec3(0.45, 1.00, 0.95);
 
   // Mouse-anchored hot spot — broad, soft.
   vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
@@ -618,9 +623,12 @@ vec4 mode_luminescent(float in_cut, float in_artwork) {
   float base_alpha = base_sample.a * u_has_base;
 
   // Substrate — the glow itself. Inner-glow color deep inside, outer
-  // cooler at the edge boundary. Pulse-modulated.
+  // cooler at the edge boundary. Pulse-modulated, then brightness-
+  // boosted (×1.18) so resting amplitude pushes past 1.0 at the green
+  // peak — the material reads as a light source, not a colored sticker.
   float boundary_ness = clamp(edge_band, 0.0, 1.0);
   vec3 substrate = mix(inner_glow, outer_glow, boundary_ness) * pulse;
+  substrate *= 1.18;
   substrate = apply_macro_texture(substrate, u_texture_strength);
 
   // === Bleed substrate, two variants blended by base_alpha ===
@@ -628,19 +636,34 @@ vec4 mode_luminescent(float in_cut, float in_artwork) {
   // Same continuous-in-base_alpha model as holographic. With QF OFF
   // the bleed has opaque source pixels (teal) — we want the glow to
   // TINT them, not replace them. With QF ON the bleed is empty — we
-  // paint the glow as the visible material, but not at full opacity
-  // so it reads as vinyl rather than lime-green plastic.
+  // paint the glow as the visible material. Brighter than before so
+  // it reads as "this surface is emitting light", not "this is green
+  // plastic".
 
   // (a) Bare glow — transparent base. The substrate IS what we see.
-  vec3 bare_glow = substrate + inner_glow * hotspot * 0.25;
-  bare_glow += inner_glow * edge_band * 0.22;
+  //     Hotspot doubled (0.45 vs 0.25) — cursor "charges" the glow
+  //     visibly. Edge-band doubled (0.45 vs 0.22) — the cut-edge
+  //     phosphorescent rim now reads as a bright leak.
+  vec3 bare_glow = substrate + inner_glow * hotspot * 0.45;
+  bare_glow += inner_glow * edge_band * 0.45;
+  // Constant additive luminance bloom modulated by pulse — every pixel
+  // in the bare bleed gets a baseline brightening that breathes with
+  // the autonomous pulse. This is the signal that says "this material
+  // emits its own light". Without it, the substrate reads as merely
+  // colored; with it, the customer perceives active emission.
+  bare_glow += inner_glow * pulse * 0.18;
 
   // (b) Tinted-base glow — opaque base. Multiply blend (base × glow)
   //     preserves the base hue; gain compensates so the result isn't
   //     dimmer than the source. Additive edge-glow leaks past visibly.
-  vec3 tinted_glow = base_rgb * substrate * 1.5;
-  tinted_glow += inner_glow * edge_band * 0.20;
-  tinted_glow = mix(base_rgb, tinted_glow, 0.75);
+  //     Edge-glow strength matches bare path (0.45) so the leak is
+  //     consistent regardless of QF state.
+  vec3 tinted_glow = base_rgb * substrate * 1.65;
+  tinted_glow += inner_glow * edge_band * 0.45;
+  // Light-source additive on the tinted side too, but at lower
+  // amplitude so the underlying base color stays recognizable.
+  tinted_glow += inner_glow * pulse * 0.12;
+  tinted_glow = mix(base_rgb, tinted_glow, 0.78);
 
   vec3 substrate_color = mix(bare_glow, tinted_glow, base_alpha);
   substrate_color = clamp(substrate_color, 0.0, 1.0);
@@ -653,9 +676,12 @@ vec4 mode_luminescent(float in_cut, float in_artwork) {
   float ink_density = in_artwork * base_alpha * (1.0 - base_brightness * 0.25);
   ink_density = clamp(ink_density, 0.0, 1.0);
 
-  // Ink response — glow tints the printed ink mildly + additive edge leak.
-  vec3 ink_color = mix(base_rgb, base_rgb * substrate * 1.5, 0.15);
-  ink_color += inner_glow * edge_band * 0.18;
+  // Ink response — glow tints the printed ink mildly + additive edge
+  // leak. Edge leak strengthened (0.30 vs 0.18) so the gorilla's dark
+  // outlines pick up a visible green-cyan halo at the silhouette,
+  // selling the "light leaks past the ink" feel.
+  vec3 ink_color = mix(base_rgb, base_rgb * substrate * 1.5, 0.18);
+  ink_color += inner_glow * edge_band * 0.30;
   ink_color = clamp(ink_color, 0.0, 1.0);
 
   vec3 rgb = mix(substrate_color, ink_color, ink_density);
@@ -663,9 +689,13 @@ vec4 mode_luminescent(float in_cut, float in_artwork) {
   // Alpha — continuous: lighter over opaque colored bleed (let the
   // teal ground show through the tint); heavier over transparent
   // bleed (paint the only material visible); minimal over ink.
-  float bleed_alpha_mix = mix(0.90, 0.55, base_alpha * (1.0 - in_artwork));
-  float alpha = mix(bleed_alpha_mix, 0.20, ink_density) + edge_band * 0.22 + hotspot * 0.10;
-  alpha = clamp(alpha, 0.0, 0.96);
+  // Floors raised slightly (0.93 / 0.58 vs 0.90 / 0.55) so the
+  // brighter substrate has the alpha budget to actually show. Edge +
+  // hotspot boosts also raised so the additive specular punches
+  // through dense ink visibly.
+  float bleed_alpha_mix = mix(0.93, 0.58, base_alpha * (1.0 - in_artwork));
+  float alpha = mix(bleed_alpha_mix, 0.22, ink_density) + edge_band * 0.28 + hotspot * 0.14;
+  alpha = clamp(alpha, 0.0, 0.97);
 
   return vec4(rgb, alpha * in_cut);
 }
