@@ -77,7 +77,7 @@ const SWATCH_CLASSES: Record<Material, string> = {
 <template>
   <aside
     aria-label="Ajustes del recorte"
-    class="flex h-full max-h-[calc(100svh-240px)] min-h-0 flex-col gap-5 overflow-y-auto rounded-lg border border-border bg-surface-1 p-5"
+    class="flex flex-col gap-5 rounded-lg border border-border bg-surface-1 p-5 lg:h-full lg:max-h-[calc(100svh-240px)] lg:min-h-0 lg:overflow-y-auto"
   >
     <!-- ===== Forma ===== -->
     <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
@@ -170,10 +170,10 @@ const SWATCH_CLASSES: Record<Material, string> = {
     <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
       Material
     </h2>
-    <p class="-mt-3 text-xs text-text-muted">
+    <p class="text-xs text-text-muted">
       El halo de corte usa el color del material elegido.
     </p>
-    <div class="flex max-h-72 flex-col gap-1 overflow-y-auto pr-1">
+    <div class="flex max-h-72 shrink-0 flex-col gap-1 overflow-y-auto pr-1">
       <button
         v-for="m in MATERIALS"
         :key="m"

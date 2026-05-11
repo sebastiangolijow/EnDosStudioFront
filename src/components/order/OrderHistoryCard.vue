@@ -56,8 +56,24 @@ const thumbnailUrl = computed(() => {
   return original?.file ?? null
 })
 
+const isDraft = computed<boolean>(() => props.order.status === 'draft')
+
 function viewDetails() {
   router.push({ name: 'confirmation', params: { uuid: props.order.uuid } })
+}
+
+/** For drafts: route back to the editor (sticker drafts) or to the
+ *  product detail (catalog drafts). Catalog drafts are rare in practice
+ *  — they're only created mid-checkout — but we handle them so the CTA
+ *  never strands the customer. */
+function continueEditing() {
+  if (isCatalogOrder.value) {
+    const slug = props.order.product_detail?.slug
+    if (slug) router.push({ name: 'catalog-detail', params: { slug } })
+    else router.push('/catalogo')
+    return
+  }
+  router.push({ name: 'editor', params: { uuid: props.order.uuid } })
 }
 </script>
 
@@ -103,12 +119,26 @@ function viewDetails() {
       </p>
     </div>
 
-    <!-- Price + CTA -->
+    <!-- Price + CTA. Drafts get a "Continuar editando" CTA that routes
+         back to the editor; price hidden because total_amount_cents
+         stays 0 until place_order runs (would read €0.00 otherwise). -->
     <div class="flex flex-col items-end gap-2">
-      <p class="font-semibold text-text">
+      <p
+        v-if="!isDraft"
+        class="font-semibold text-text"
+      >
         {{ totalLabel }}
       </p>
       <AppButton
+        v-if="isDraft"
+        size="sm"
+        :data-testid="`draft-continue-${order.uuid}`"
+        @click="continueEditing"
+      >
+        Continuar editando
+      </AppButton>
+      <AppButton
+        v-else
         variant="secondary"
         size="sm"
         @click="viewDetails"

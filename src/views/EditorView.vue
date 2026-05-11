@@ -945,14 +945,22 @@ let lastSavedSnapshot: {
   shape: Shape
 } | null = null
 
-function maybePersistOrderEdit() {
-  if (!order.value) return
+/**
+ * Persist the draft-order fields (material, shape, relief). Returns the
+ * snapshot it sent so callers can compare against subsequent state. Used
+ * both by the debounced autosave path and by the explicit "Guardar
+ * borrador" button (which flushes any pending debounce and PATCHes
+ * immediately).
+ */
+async function patchDraftFields(): Promise<typeof lastSavedSnapshot> {
+  if (!order.value) return lastSavedSnapshot
   const snap = {
     material: material.value,
     withRelief: withRelief.value,
     reliefNote: reliefNote.value,
     shape: shape.value,
   }
+  // Nothing changed since the last successful save — skip the request.
   if (
     lastSavedSnapshot &&
     lastSavedSnapshot.material === snap.material &&
@@ -960,21 +968,27 @@ function maybePersistOrderEdit() {
     lastSavedSnapshot.reliefNote === snap.reliefNote &&
     lastSavedSnapshot.shape === snap.shape
   ) {
-    return
+    return lastSavedSnapshot
   }
+  const updated = await ordersService.update(orderUuid.value, {
+    // Only send `material` when set — backend rejects empty strings on
+    // material because it's a CharField with choices.
+    ...(snap.material ? { material: snap.material } : {}),
+    shape: snap.shape,
+    with_relief: snap.withRelief,
+    relief_note: snap.reliefNote,
+  })
+  order.value = updated
+  lastSavedSnapshot = snap
+  return snap
+}
+
+function maybePersistOrderEdit() {
+  if (!order.value) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(async () => {
     try {
-      const updated = await ordersService.update(orderUuid.value, {
-        // Only send `material` when set — backend rejects empty strings on
-        // material because it's a CharField with choices.
-        ...(snap.material ? { material: snap.material } : {}),
-        shape: snap.shape,
-        with_relief: snap.withRelief,
-        relief_note: snap.reliefNote,
-      })
-      order.value = updated
-      lastSavedSnapshot = snap
+      await patchDraftFields()
     } catch {
       toast.error('No pudimos guardar tus cambios. Probá de nuevo.')
     }
@@ -982,6 +996,50 @@ function maybePersistOrderEdit() {
 }
 
 watch([material, withRelief, reliefNote, shape], maybePersistOrderEdit)
+
+/**
+ * Manual save — the "Guardar borrador" button. Differs from the
+ * debounced autosave in three ways:
+ *   1. Cancels any pending debounce and PATCHes immediately.
+ *   2. Also uploads the current cut mask if one exists (autosave only
+ *      covers draft fields; the cut polygon is saved on Continuar).
+ *   3. Shows a confirmation toast so the customer has explicit
+ *      feedback that their work is safe.
+ */
+async function onSaveDraft() {
+  if (!order.value || !canvasRef.value || isSaving.value) return
+  // Cancel any in-flight debounce so we don't race against our own
+  // explicit save.
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  isSaving.value = true
+  try {
+    // 1. Flush draft fields (material / shape / relief).
+    await patchDraftFields()
+    // 2. Upload the current cut mask if one exists. Same logic as
+    //    onContinue: delete the previous die_cut_mask file, upload the
+    //    new one. unique_together(order, kind) requires this dance.
+    if (canvasRef.value.hasMask()) {
+      const blob = await canvasRef.value.getMaskAsBlob()
+      if (blob) {
+        const existing = order.value.files.find((f) => f.kind === 'die_cut_mask')
+        if (existing) {
+          await filesService.delete(orderUuid.value, existing.uuid)
+        }
+        await filesService.upload(orderUuid.value, 'die_cut_mask', blob)
+        // Refresh order.files so subsequent saves find the new file.
+        order.value = await ordersService.retrieve(orderUuid.value)
+      }
+    }
+    toast.success('Borrador guardado.')
+  } catch {
+    toast.error('No pudimos guardar el borrador. Probá de nuevo.')
+  } finally {
+    isSaving.value = false
+  }
+}
 
 // When the customer switches shape inside the editor, repaint the mask
 // immediately. For geometric shapes that means a new primitive polygon;
@@ -1113,9 +1171,11 @@ onMounted(bootstrapEditor)
       class="mb-6"
     />
 
-    <!-- Top bar -->
-    <header class="mb-6 flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-3">
+    <!-- Top bar — stacks on mobile so the title + action buttons don't
+         crowd at narrow widths. Title row first, action buttons row
+         below. Title font scaled down on small screens. -->
+    <header class="mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <div class="flex items-center gap-2 sm:gap-3">
         <AppButton
           variant="ghost"
           size="sm"
@@ -1123,7 +1183,7 @@ onMounted(bootstrapEditor)
         >
           ← Volver
         </AppButton>
-        <h1 class="text-h3 font-bold text-text">
+        <h1 class="text-xl font-bold text-text sm:text-h3">
           Editor de sticker
         </h1>
       </div>
@@ -1132,6 +1192,10 @@ onMounted(bootstrapEditor)
           variant="secondary"
           size="sm"
           :disabled="isSaving"
+          :loading="isSaving"
+          data-testid="editor-save-draft"
+          class="flex-1 sm:flex-none"
+          @click="onSaveDraft"
         >
           Guardar borrador
         </AppButton>
@@ -1139,6 +1203,7 @@ onMounted(bootstrapEditor)
           size="sm"
           :loading="isSaving"
           data-testid="editor-continue"
+          class="flex-1 sm:flex-none"
           @click="onContinue"
         >
           Continuar

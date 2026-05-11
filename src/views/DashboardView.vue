@@ -22,13 +22,14 @@ interface FilterPill {
 }
 
 /**
- * Filter pills in display order. We deliberately omit `draft` because drafts
- * are mid-edit orders; the dashboard is for committed orders. We also omit
- * statuses the customer can't reach yet (none in M2 — all 6 non-draft states
- * are reachable).
+ * Filter pills in display order. "Todos" still hides drafts — drafts are
+ * mid-edit and would clutter the regular order history with un-checkout-
+ * able rows. They get their own pill ("Borradores") which shows ONLY
+ * drafts, with a "Continuar editando" CTA on each card.
  */
 const filters: FilterPill[] = [
   { value: 'all', label: 'Todos' },
+  { value: 'draft', label: STATUS_LABELS.draft },
   { value: 'placed', label: STATUS_LABELS.placed },
   { value: 'paid', label: STATUS_LABELS.paid },
   { value: 'in_production', label: STATUS_LABELS.in_production },
@@ -40,14 +41,21 @@ const filters: FilterPill[] = [
 const activeFilter = ref<FilterValue>('all')
 const isLoading = ref(false)
 
-/** Visible orders after applying the active filter. Drafts are hidden always. */
+/** Visible orders after applying the active filter:
+ *   - 'all'    → everything except drafts
+ *   - 'draft'  → drafts only
+ *   - other    → exact status match (drafts excluded by definition)
+ */
 const visibleOrders = computed<Order[]>(() => {
-  const all = orderStore.orderHistory.filter((o) => o.status !== 'draft')
-  if (activeFilter.value === 'all') return all
-  return all.filter((o) => o.status === activeFilter.value)
+  if (activeFilter.value === 'all') {
+    return orderStore.orderHistory.filter((o) => o.status !== 'draft')
+  }
+  return orderStore.orderHistory.filter((o) => o.status === activeFilter.value)
 })
 
-const totalCount = computed(() => orderStore.orderHistory.filter((o) => o.status !== 'draft').length)
+const totalCount = computed(
+  () => orderStore.orderHistory.filter((o) => o.status !== 'draft').length,
+)
 
 async function fetchOrders() {
   isLoading.value = true
