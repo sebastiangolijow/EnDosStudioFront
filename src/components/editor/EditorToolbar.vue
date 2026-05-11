@@ -20,6 +20,10 @@ interface Props {
   isSmartCutActive?: boolean
   /** Current zoom level (1, 1.5, 2). Drives the Zoom button's sublabel. */
   zoomLevel?: number
+  /** True when the undo stack has at least one snapshot. Enables Deshacer. */
+  canUndo?: boolean
+  /** True when the redo stack has at least one snapshot. Enables Rehacer. */
+  canRedo?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -27,6 +31,8 @@ const props = withDefaults(defineProps<Props>(), {
   hasOriginal: false,
   isSmartCutActive: false,
   zoomLevel: 1,
+  canUndo: false,
+  canRedo: false,
 })
 
 const emit = defineEmits<{
@@ -34,6 +40,8 @@ const emit = defineEmits<{
   'smart-cut': []
   'reset': []
   'zoom': []
+  'undo': []
+  'redo': []
 }>()
 
 // Auto cut is meaningful only for `contorneado` — for geometric shapes
@@ -112,13 +120,13 @@ const tools = computed<Tool[]>(() => [
     id: 'deshacer',
     icon: '↶',
     label: 'Deshacer',
-    enabled: false,
+    enabled: props.canUndo,
   },
   {
     id: 'rehacer',
     icon: '↷',
     label: 'Rehacer',
-    enabled: false,
+    enabled: props.canRedo,
   },
 ])
 
@@ -127,6 +135,8 @@ function onToolClick(toolId: Tool['id']) {
   if (toolId === 'smart-cut') return emit('smart-cut')
   if (toolId === 'borrar') return emit('reset')
   if (toolId === 'zoom') return emit('zoom')
+  if (toolId === 'deshacer') return emit('undo')
+  if (toolId === 'rehacer') return emit('redo')
 }
 </script>
 

@@ -147,6 +147,13 @@ defineExpose({
   setMask: (points: ImagePoint[], artwork: ImagePoint[] | null = null) =>
     setMask(points, artwork),
   clearMask: () => clearMask(),
+  // Read-only accessors for snapshot/restore (undo/redo). Returns deep
+  // clones so callers can hold stable references — the underlying refs
+  // get reassigned on every setMask call.
+  getMaskPoints: (): ImagePoint[] | null =>
+    maskPoints.value ? maskPoints.value.map((p) => ({ x: p.x, y: p.y })) : null,
+  getArtworkPoints: (): ImagePoint[] | null =>
+    artworkPoints.value ? artworkPoints.value.map((p) => ({ x: p.x, y: p.y })) : null,
   setMaskVisible: (v: boolean) => setMaskVisible(v),
   setMaskPalette: (palette: MaskPalette) => setMaskPalette(palette),
   setRemoveBackground: (enabled: boolean) => setRemoveBackground(enabled),

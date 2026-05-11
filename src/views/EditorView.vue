@@ -305,6 +305,202 @@ const SMART_CUT_DEFAULT_MARGIN_MM = 15
 // working unchanged across the swap.
 const originalImageSrc = ref<string | null>(null)
 
+// ============================================================
+// Undo / Redo (Model A: checkpoint-based history)
+// ============================================================
+//
+// Snapshots capture meaningful editor state at "decision points":
+// after Auto cut, after smart-cut, on shape/material/relief/Quitar-fondo
+// change, on Borrar. Slider drags (margin, smoothing) and free-text
+// inputs (reliefNote) do NOT push checkpoints — they ride within the
+// current undo step.
+//
+// Stack discipline: pushCheckpoint captures the CURRENT (pre-mutation)
+// state, then the caller mutates. Undo pops, swaps current → redoStack,
+// applies the popped snapshot.
+//
+// The `restoring` flag suppresses reactive checkpoint-watchers during
+// an undo/redo apply so the restore itself doesn't push a new snapshot
+// (which would corrupt the stack and prevent further undos).
+interface EditorSnapshot {
+  /** Image src (may be the original PNG URL, or a smart-cut data: URL
+   *  if the customer was in smart-cut mode at this checkpoint). */
+  imageSrc: string | null
+  /** Cut polygon — read out of useCanvasEditor via the canvas ref. */
+  maskPoints: ImagePoint[] | null
+  /** Tight artwork polygon (smart-cut only; null for classical Auto cut
+   *  and geometric shapes). */
+  artworkPoints: ImagePoint[] | null
+  cutMode: 'auto' | 'smart' | null
+  smartCutTightPoints: ImagePoint[] | null
+  // Draft-order fields
+  shape: Shape
+  material: Material | ''
+  withRelief: boolean
+  reliefNote: string
+  // View / clipping
+  removeBackground: boolean
+  // Sliders — included because Borrar resets them; preserved across
+  // checkpoints that DON'T change them (we just copy current values).
+  marginMm: number
+  smoothingSlider: number
+}
+
+const undoStack = ref<EditorSnapshot[]>([])
+const redoStack = ref<EditorSnapshot[]>([])
+const HISTORY_LIMIT = 50
+/** True while applySnapshot is running. Reactive watchers that
+ *  normally push a checkpoint should bail when this is set. */
+const restoring = ref<boolean>(false)
+
+function captureSnapshot(): EditorSnapshot {
+  return {
+    imageSrc: loadedImage.value?.src ?? originalImageSrc.value,
+    maskPoints: canvasRef.value?.getMaskPoints() ?? null,
+    artworkPoints: canvasRef.value?.getArtworkPoints() ?? null,
+    cutMode: cutMode.value,
+    smartCutTightPoints: smartCutTightPoints.value
+      ? smartCutTightPoints.value.map((p) => ({ x: p.x, y: p.y }))
+      : null,
+    shape: shape.value,
+    material: material.value,
+    withRelief: withRelief.value,
+    reliefNote: reliefNote.value,
+    removeBackground: removeBackground.value,
+    marginMm: cropOptions.value.marginMm ?? 15,
+    smoothingSlider: smoothingSlider.value,
+  }
+}
+
+function pushCheckpoint() {
+  if (restoring.value) return
+  undoStack.value.push(captureSnapshot())
+  // A new action invalidates the redo branch — once the customer takes
+  // a different path, "forward" no longer makes sense.
+  redoStack.value = []
+  if (undoStack.value.length > HISTORY_LIMIT) {
+    undoStack.value.shift()
+  }
+}
+
+/** Monotonic id incremented on every "context-shift" action (undo, redo,
+ *  Borrar). Long-running operations (smart-cut request, Auto cut worker
+ *  run) capture this id before await; on resolve they compare and drop
+ *  their result if the id has changed — prevents a stale smart-cut
+ *  response from overwriting state the customer just rewound past. */
+const cutGenerationId = ref<number>(0)
+
+async function applySnapshot(s: EditorSnapshot) {
+  if (!canvasRef.value) return
+  restoring.value = true
+  // Bump the generation id so any in-flight smart-cut / Auto cut
+  // resolves into a no-op.
+  cutGenerationId.value++
+  try {
+    // Image — reload only if it changed (avoid an expensive re-decode
+    // when the snapshot keeps the same source).
+    const currentSrc = loadedImage.value?.src ?? originalImageSrc.value
+    if (s.imageSrc && s.imageSrc !== currentSrc) {
+      await canvasRef.value.loadImage(s.imageSrc)
+      const img = new Image()
+      if (!s.imageSrc.startsWith('blob:') && !s.imageSrc.startsWith('data:')) {
+        img.crossOrigin = 'anonymous'
+      }
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error('decode failed'))
+        img.src = s.imageSrc as string
+      })
+      loadedImage.value = img
+    }
+    // Cut state
+    if (s.maskPoints) {
+      canvasRef.value.setMask(s.maskPoints, s.artworkPoints)
+    } else {
+      canvasRef.value.clearMask()
+    }
+    cutMode.value = s.cutMode
+    smartCutTightPoints.value = s.smartCutTightPoints
+      ? s.smartCutTightPoints.map((p) => ({ x: p.x, y: p.y }))
+      : null
+    // Draft order
+    shape.value = s.shape
+    material.value = s.material
+    withRelief.value = s.withRelief
+    reliefNote.value = s.reliefNote
+    // View
+    removeBackground.value = s.removeBackground
+    canvasRef.value.setRemoveBackground(s.removeBackground)
+    // Sliders — assign via spread so the cropOptions watcher fires
+    // (downstream consumers track the object reference).
+    cropOptions.value = {
+      ...cropOptions.value,
+      marginMm: s.marginMm,
+    }
+    smoothingSlider.value = s.smoothingSlider
+    noContourMessage.value = null
+  } finally {
+    // Let the dust settle (one tick) before re-enabling checkpoints —
+    // some restore-triggered watchers fire on the next microtask and
+    // shouldn't push.
+    await nextTick()
+    restoring.value = false
+  }
+}
+
+async function onUndo() {
+  if (undoStack.value.length === 0) return
+  const snapshot = undoStack.value.pop() as EditorSnapshot
+  redoStack.value.push(captureSnapshot())
+  await applySnapshot(snapshot)
+}
+
+async function onRedo() {
+  if (redoStack.value.length === 0) return
+  const snapshot = redoStack.value.pop() as EditorSnapshot
+  undoStack.value.push(captureSnapshot())
+  await applySnapshot(snapshot)
+}
+
+const canUndo = computed(() => undoStack.value.length > 0)
+const canRedo = computed(() => redoStack.value.length > 0)
+
+/**
+ * Inspector emits a change for a checkpoint-relevant field. Push the
+ * current (pre-change) state to the undo stack, then mutate.
+ *
+ * Skipped if the new value equals the current one (idempotent emits from
+ * the inspector — e.g. clicking the already-selected card — would
+ * otherwise corrupt the stack with identical snapshots).
+ *
+ * Skipped during restore: applySnapshot sets these refs imperatively;
+ * the inspector's reactive bindings would re-emit, triggering this
+ * handler, and a checkpoint would land mid-restore. The `restoring`
+ * flag inside pushCheckpoint already prevents the push, but bailing
+ * here avoids the dead-code path entirely.
+ */
+function onInspectorChange<K extends 'shape' | 'material' | 'withRelief' | 'removeBackground'>(
+  field: K,
+  value: K extends 'shape'
+    ? Shape
+    : K extends 'material'
+      ? Material | ''
+      : boolean,
+) {
+  if (restoring.value) return
+  // Equality short-circuit — don't push for no-op changes.
+  if (field === 'shape' && shape.value === value) return
+  if (field === 'material' && material.value === value) return
+  if (field === 'withRelief' && withRelief.value === value) return
+  if (field === 'removeBackground' && removeBackground.value === value) return
+
+  pushCheckpoint()
+  if (field === 'shape') shape.value = value as Shape
+  else if (field === 'material') material.value = value as Material | ''
+  else if (field === 'withRelief') withRelief.value = value as boolean
+  else if (field === 'removeBackground') removeBackground.value = value as boolean
+}
+
 const hasOriginalFile = computed<boolean>(
   // Optional-chain `files` too: there's a brief reactivity gap during
   // smart-cut where order.value is set but order.value.files might be
@@ -332,6 +528,9 @@ async function runSmartCut(marginMm: number, smoothness: number) {
   const effectiveMargin = Math.max(SMART_CUT_MIN_MARGIN_MM, Math.round(marginMm))
   const effectiveSmoothness = Math.max(1, Math.min(10, Math.round(smoothness)))
 
+  // Capture the current generation id so a late response after an undo/
+  // redo/Borrar doesn't overwrite state the customer just rewound past.
+  const generationAtStart = cutGenerationId.value
   noContourMessage.value = null
   isSmartCutting.value = true
   try {
@@ -340,6 +539,10 @@ async function runSmartCut(marginMm: number, smoothness: number) {
       effectiveMargin,
       effectiveSmoothness,
     )
+    // Stale response — customer changed editor context while the request
+    // was in flight. Drop silently; the new context already has the right
+    // state.
+    if (generationAtStart !== cutGenerationId.value) return
     if (result.kind === 'no-contour-found') {
       noContourMessage.value =
         'No pudimos detectar el contorno automáticamente. Probá con otra imagen o usá Auto cut.'
@@ -411,6 +614,10 @@ async function runSmartCut(marginMm: number, smoothness: number) {
  * sane bleed without having to discover the slider.
  */
 async function onSmartCut() {
+  // Checkpoint the pre-smart-cut state so the customer can undo back to it.
+  // The slider-driven re-call sites use runSmartCut directly — no checkpoint
+  // there, since the customer is iterating within the same decision.
+  pushCheckpoint()
   const current = cropOptions.value.marginMm ?? 0
   const margin =
     current < SMART_CUT_MIN_MARGIN_MM ? SMART_CUT_DEFAULT_MARGIN_MM : current
@@ -449,8 +656,14 @@ async function restoreOriginalBaseImage() {
 // incorrect for concave shapes. PIL's MaxFilter is a true Minkowski-sum
 // dilation on the binary mask and always yields a simple polygon.)
 
-async function onAutoCut() {
+async function onAutoCut(opts: { fromToolbar?: boolean } = { fromToolbar: true }) {
   if (!order.value || !canvasRef.value?.hasImage()) return
+
+  // Checkpoint only when the customer clicked the toolbar. Slider-driven
+  // re-runs (via the cropOptions watcher) iterate within the same
+  // checkpoint — no need to flood the undo stack with one entry per
+  // slider tick.
+  if (opts.fromToolbar) pushCheckpoint()
 
   // Pull the image out of the canvas state via a hidden temp Image. We don't
   // expose the HTMLImageElement directly through CanvasStage's ref to keep
@@ -471,11 +684,15 @@ async function onAutoCut() {
     await restoreOriginalBaseImage()
   }
 
+  const generationAtStart = cutGenerationId.value
   noContourMessage.value = null
   try {
     const result = await runAutoCrop(loadedImage.value, cropOptions.value, {
       pxPerMm: pxPerMm.value,
     })
+    // Stale response — customer changed editor context (undo/redo/Borrar)
+    // while OpenCV was running. Drop silently.
+    if (generationAtStart !== cutGenerationId.value) return
     if (result.kind === 'no-contour-found') {
       noContourMessage.value =
         'No pudimos detectar un contorno. Probá ajustar los umbrales o subí una foto con más contraste.'
@@ -514,6 +731,11 @@ async function onAutoCut() {
  */
 async function onReset() {
   if (!canvasRef.value) return
+  // Checkpoint the current state — "wait, I didn't mean Borrar" → undo
+  // takes the customer back. Bump generation id so any in-flight cut
+  // operation doesn't overwrite the reset state.
+  pushCheckpoint()
+  cutGenerationId.value++
   // Restore the original image first so subsequent state resets apply
   // against the right pixels. originalImageSrc is populated on the first
   // loadImageIntoEditor call (which the bootstrap fires).
@@ -625,7 +847,7 @@ watch(cropOptions, () => {
   }
   // Classical auto-cut: debounce + re-run OpenCV with the new options.
   if (optionsTimer) clearTimeout(optionsTimer)
-  optionsTimer = setTimeout(onAutoCut, 300)
+  optionsTimer = setTimeout(() => onAutoCut({ fromToolbar: false }), 300)
 }, { deep: true })
 
 watch(maskVisible, (v) => canvasRef.value?.setMaskVisible(v))
@@ -946,10 +1168,14 @@ onMounted(bootstrapEditor)
         :has-original="hasOriginalFile"
         :is-smart-cut-active="cutMode === 'smart'"
         :zoom-level="zoomLevel"
+        :can-undo="canUndo"
+        :can-redo="canRedo"
         @auto-cut="onAutoCut"
         @smart-cut="onSmartCut"
         @reset="onReset"
         @zoom="onZoom"
+        @undo="onUndo"
+        @redo="onRedo"
       />
 
       <!-- Center: canvas + status banner -->
@@ -1032,11 +1258,11 @@ onMounted(bootstrapEditor)
         :relief-note="reliefNote"
         :smoothing="smoothingSlider"
         @update:mask-visible="maskVisible = $event"
-        @update:remove-background="removeBackground = $event"
+        @update:remove-background="onInspectorChange('removeBackground', $event)"
         @update:options="cropOptions = $event"
-        @update:material="material = $event"
-        @update:shape="shape = $event"
-        @update:with-relief="withRelief = $event"
+        @update:material="onInspectorChange('material', $event)"
+        @update:shape="onInspectorChange('shape', $event)"
+        @update:with-relief="onInspectorChange('withRelief', $event)"
         @update:relief-note="reliefNote = $event"
         @update:smoothing="smoothingSlider = $event"
       />
