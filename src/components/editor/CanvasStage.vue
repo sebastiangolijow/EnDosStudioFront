@@ -24,6 +24,7 @@ const {
   fit,
   effectMode,
   smoothingSlider,
+  baseDirty,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -106,6 +107,21 @@ watch(
     })
   },
 )
+
+// Re-upload the base canvas snapshot to the FX layer whenever the base
+// repaints. The shader's bleed branch samples this to TINT (not
+// overlay) the iridescence — preserving the underlying color (e.g.
+// teal smart-cut bleed reads as teal-with-shimmer instead of rainbow
+// paint over teal).
+//
+// baseDirty bumps inside `drawBaseLayer`, so by the time this watcher
+// fires the base canvas's pixels are already painted — no extra
+// nextTick coordination needed. The watcher captures setMask /
+// setRemoveBackground / setTransparentMaterial / resize / loadImage
+// / setSmoothingSlider redraws in one place.
+watch(baseDirty, () => {
+  if (baseCanvas.value) fx.setBaseSnapshot(baseCanvas.value)
+})
 
 // Track cursor position over the canvas stack so the shader can shift
 // the iridescent gradient phase as the customer hovers — that's the

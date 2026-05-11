@@ -100,6 +100,15 @@ uniform sampler2D u_artwork_stencil;
 uniform sampler2D u_material_texture;
 uniform float u_has_texture;     // 0 = procedural only, 1 = sample texture
 uniform float u_texture_strength; // per-material multiply factor 0..1
+// Snapshot of the base 2D canvas (artwork + smart-cut bleed background).
+// Sampled in the bleed branch so the iridescence TINTS the underlying
+// color (e.g. a teal bleed reads as teal-with-shimmer, not rainbow
+// paint). When no snapshot has been uploaded yet (early frames before
+// the image loads, or modes that don't need it), u_has_base flips off
+// and the bleed branch falls back to the legacy gradient overlay so
+// nothing flashes black.
+uniform sampler2D u_base_tex;
+uniform float u_has_base;        // 0 = no snapshot yet, 1 = sample base
 uniform float u_time;        // seconds since mount
 uniform vec2  u_mouse;       // 0..1, (0.5,0.5) = center
 uniform float u_intensity;   // 0..1, fade in/out
@@ -323,8 +332,53 @@ vec4 mode_holographic_with_params(
   float edge_bloom = smoothstep(0.0, 0.45, in_cut)
                    * (1.0 - smoothstep(0.45, 1.0, in_cut));
 
-  // === Bleed area — full holographic surface ===
-  vec3 bleed_color = mix(grad, WHITE, clamp(highlight * 0.5, 0.0, 1.0));
+  // === Bleed area — TINT the underlying base, don't overlay ===
+  //
+  // Mental model: holographic foil is a transparent iridescent laminate.
+  // Real foil over a teal substrate still reads as teal — the laminate
+  // adds a tilt-dependent hue shift, never replaces the base color.
+  //
+  // Smart-cut now preserves the customer's source RGB in the bleed ring
+  // (the "background extends outward" feel). Reading those pixels back
+  // here and tinting them — instead of painting iridescence on top —
+  // gives us the target look: teal bleed stays teal, just with rainbow
+  // shimmer modulating its hue.
+  //
+  // Composition:
+  //   1. base_rgb       — the underlying canvas color (teal in the gorilla case)
+  //   2. tinted         — base × gradient × gain — multiply blend preserves
+  //                       base hue, gradient adds chromatic modulation
+  //   3. + highlights   — brighten only at sparse specular zones (the "shimmer")
+  //   4. mix(base, …)   — final has at most 70% tint contribution, so base
+  //                       color is always recognizable
+  //   5. has_base gate  — when no snapshot is uploaded (e.g. before first
+  //                       render) OR the base canvas is transparent here
+  //                       (geometric shapes with no source pixels in the
+  //                       bleed ring), fall back to the legacy paint-on-top
+  //                       gradient so the customer still sees the foil
+  //                       effect — the no-op visual matches the previous
+  //                       FX layer behavior.
+  vec4 base_sample = texture2D(u_base_tex, v_uv);
+  vec3 base_rgb = base_sample.rgb;
+  float base_avail = u_has_base * base_sample.a;
+  // Multiply tint with gain. ×1.6 compensates so mid-bright base ×
+  // mid-bright grad doesn't dim the overall result — keeps brightness
+  // similar to the source.
+  vec3 tinted = base_rgb * grad * 1.6;
+  // Sparse highlight brightening — same highlight mask the artwork
+  // branch uses, so the shimmer streaks sweep across base and artwork
+  // in concert (sells the "single laminate over the whole sticker" feel).
+  tinted = mix(tinted, WHITE, clamp(highlight * 0.35, 0.0, 1.0));
+  // Final tinted bleed — at most 70% of the way from base to tint, so
+  // the underlying hue (teal) is never lost.
+  vec3 tinted_bleed = mix(base_rgb, tinted, 0.7);
+  // Legacy gradient overlay — fallback when base snapshot unavailable.
+  // Kept verbatim from the previous version of this branch.
+  vec3 legacy_bleed = mix(grad, WHITE, clamp(highlight * 0.5, 0.0, 1.0));
+  // Smooth choice between the two — clamped multiply so the fallback
+  // doesn't suddenly snap in when the base canvas's alpha edge falls
+  // here (the smart-cut RGBA has a thin alpha-soft boundary).
+  vec3 bleed_color = mix(legacy_bleed, tinted_bleed, clamp(base_avail, 0.0, 1.0));
   float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.06;
   bleed_color *= grain_mul;
   bleed_color += vec3(edge_bloom) * 0.12;
@@ -566,6 +620,8 @@ export function useHolographicFX() {
     u_material_texture: WebGLUniformLocation | null
     u_has_texture: WebGLUniformLocation | null
     u_texture_strength: WebGLUniformLocation | null
+    u_base_tex: WebGLUniformLocation | null
+    u_has_base: WebGLUniformLocation | null
     u_time: WebGLUniformLocation | null
     u_mouse: WebGLUniformLocation | null
     u_intensity: WebGLUniformLocation | null
@@ -574,6 +630,14 @@ export function useHolographicFX() {
 
   const cutTex = shallowRef<WebGLTexture | null>(null)
   const artworkTex = shallowRef<WebGLTexture | null>(null)
+  // Snapshot of the base 2D canvas — sampled in the shader's bleed branch
+  // so the foil tint preserves the underlying color (e.g. teal-with-shimmer
+  // instead of rainbow-over-teal). Re-uploaded by the host (CanvasStage)
+  // whenever the base canvas redraws — same triggers that already rebuild
+  // the polygon stencils, plus a microtask delay so the host's
+  // `drawBaseLayer` finishes first.
+  const baseTex = shallowRef<WebGLTexture | null>(null)
+  let hasBase = 0
   // Macro reference texture for the active material. Replaced whenever
   // setMode picks a material with a bundled macro PNG. `hasTexture` is
   // the JS mirror of the u_has_texture uniform — drives both the bind
@@ -650,6 +714,8 @@ export function useHolographicFX() {
       u_material_texture: glx.getUniformLocation(prog, 'u_material_texture'),
       u_has_texture: glx.getUniformLocation(prog, 'u_has_texture'),
       u_texture_strength: glx.getUniformLocation(prog, 'u_texture_strength'),
+      u_base_tex: glx.getUniformLocation(prog, 'u_base_tex'),
+      u_has_base: glx.getUniformLocation(prog, 'u_has_base'),
       u_time: glx.getUniformLocation(prog, 'u_time'),
       u_mouse: glx.getUniformLocation(prog, 'u_mouse'),
       u_intensity: glx.getUniformLocation(prog, 'u_intensity'),
@@ -668,10 +734,12 @@ export function useHolographicFX() {
     glx.enableVertexAttribArray(posLoc)
     glx.vertexAttribPointer(posLoc, 2, glx.FLOAT, false, 0, 0)
 
-    // Three textures — created once, replaced via setPolygons / setMode.
+    // Four textures — created once, replaced via setPolygons / setMode /
+    // setBaseSnapshot.
     cutTex.value = glx.createTexture()
     artworkTex.value = glx.createTexture()
     macroTex.value = glx.createTexture()
+    baseTex.value = glx.createTexture()
 
     // Pre-multiplied alpha is OFF (we write straight rgba), so the
     // canvas-stack default blend (over-compositing of stacked DOM
@@ -886,6 +954,14 @@ export function useHolographicFX() {
     glx.uniform1i(uni.u_material_texture, 2)
     glx.uniform1f(uni.u_has_texture, hasTexture)
     glx.uniform1f(uni.u_texture_strength, textureStrength)
+    // Base-canvas snapshot — sampled in the shader's bleed branch so the
+    // foil tints the underlying base color instead of overwriting it.
+    // u_has_base = 0 makes the bleed branch fall back to the legacy
+    // gradient (matches pre-fix behavior, no flash before first upload).
+    glx.activeTexture(glx.TEXTURE3)
+    glx.bindTexture(glx.TEXTURE_2D, baseTex.value)
+    glx.uniform1i(uni.u_base_tex, 3)
+    glx.uniform1f(uni.u_has_base, hasBase)
 
     glx.uniform1f(uni.u_time, (performance.now() - mountedAt) / 1000)
     glx.uniform2f(uni.u_mouse, mouse.x, mouse.y)
@@ -964,6 +1040,50 @@ export function useHolographicFX() {
     if (src) rebuildStencils()
   }
 
+  /**
+   * Upload the current base 2D canvas pixels as the `u_base_tex` sampler.
+   * The shader's bleed branch reads these to TINT (not overlay) the
+   * iridescence — preserving the underlying color (e.g. the teal bleed
+   * background from smart-cut) instead of replacing it with rainbow.
+   *
+   * Called by the host (CanvasStage) on the same triggers that already
+   * rebuild the polygon stencils (image / fit / mask / artwork /
+   * smoothing) — but AFTER the base canvas has finished its own redraw,
+   * typically via `nextTick`. Calling before the base draws will upload
+   * an empty / stale snapshot and the bleed branch will fall back to the
+   * legacy gradient (cheap, no flash).
+   *
+   * Tolerated cost: ~1 texImage2D per relevant editor event. The base
+   * canvas is ~600×600 px in practice; the upload is sub-millisecond on
+   * any device that already runs WebGL.
+   */
+  function setBaseSnapshot(src: HTMLCanvasElement | null) {
+    const glx = gl.value
+    if (!glx || !baseTex.value) return
+    if (!src || src.width === 0 || src.height === 0) {
+      hasBase = 0
+      return
+    }
+    glx.bindTexture(glx.TEXTURE_2D, baseTex.value)
+    // FLIP_Y false to match the stencil upload + the vertex shader's
+    // y-flip in v_uv. Result: v_uv == (0,0) maps to top-left of the base
+    // canvas — same coordinate system the stencils use.
+    glx.pixelStorei(glx.UNPACK_FLIP_Y_WEBGL, false)
+    glx.texImage2D(
+      glx.TEXTURE_2D,
+      0,
+      glx.RGBA,
+      glx.RGBA,
+      glx.UNSIGNED_BYTE,
+      src,
+    )
+    glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_MIN_FILTER, glx.LINEAR)
+    glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_MAG_FILTER, glx.LINEAR)
+    glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_WRAP_S, glx.CLAMP_TO_EDGE)
+    glx.texParameteri(glx.TEXTURE_2D, glx.TEXTURE_WRAP_T, glx.CLAMP_TO_EDGE)
+    hasBase = 1
+  }
+
   function setMouse(xNorm01: number, yNorm01: number) {
     mouse.x = Math.max(0, Math.min(1, xNorm01))
     mouse.y = Math.max(0, Math.min(1, yNorm01))
@@ -978,6 +1098,7 @@ export function useHolographicFX() {
       if (cutTex.value) glx.deleteTexture(cutTex.value)
       if (artworkTex.value) glx.deleteTexture(artworkTex.value)
       if (macroTex.value) glx.deleteTexture(macroTex.value)
+      if (baseTex.value) glx.deleteTexture(baseTex.value)
       const lose = glx.getExtension('WEBGL_lose_context')
       if (lose) lose.loseContext()
     }
@@ -986,6 +1107,8 @@ export function useHolographicFX() {
     cutTex.value = null
     artworkTex.value = null
     macroTex.value = null
+    baseTex.value = null
+    hasBase = 0
     macroImageCache.clear()
   })
 
@@ -996,6 +1119,7 @@ export function useHolographicFX() {
     setSize,
     setMode,
     setPolygons,
+    setBaseSnapshot,
     setMouse,
   }
 }

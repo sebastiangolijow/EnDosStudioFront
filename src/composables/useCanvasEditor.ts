@@ -147,6 +147,16 @@ export function useCanvasEditor() {
    *  3 = subtle smoothing. Doesn't re-run OpenCV; pure JS geometry on
    *  the saved polygon. */
   const smoothingSlider = ref<number>(3)
+  /** Monotonic counter incremented every time `drawBaseLayer` paints.
+   *  Consumers that need to snapshot the base canvas (e.g. the WebGL FX
+   *  layer, which samples it to tint the bleed instead of overlaying
+   *  rainbow on top) `watch` this ref and re-upload on bump. Cheaper
+   *  than wiring a callback for every internal redraw site (resize,
+   *  setMask, setRemoveBackground, setTransparentMaterial, loadImage,
+   *  setSmoothingSlider, …). The counter wraps at 2^31 but that's
+   *  fine — what watchers see is "value changed", not the absolute
+   *  value. */
+  const baseDirty = ref<number>(0)
 
   // === Internals (not reactive) ===
   let resizeObserver: ResizeObserver | null = null
@@ -294,6 +304,11 @@ export function useCanvasEditor() {
     ctx.globalAlpha = priorAlpha
 
     if (shouldClip) ctx.restore()
+
+    // Notify external snapshot consumers that the base pixels changed.
+    // The FX layer reads this to re-upload its u_base_tex; missing a
+    // bump would freeze the tint at the previous frame's content.
+    baseDirty.value++
   }
 
   function drawMaskLayer() {
@@ -630,6 +645,7 @@ export function useCanvasEditor() {
     artworkPoints,
     maskVisible,
     smoothingSlider,
+    baseDirty,
     // Reactive layout transform (image-natural-px → CSS-px). Kept in sync
     // with the closure-local `fit` so consumers (holographic FX) can
     // watch for resize / load and rebuild dependent textures.
