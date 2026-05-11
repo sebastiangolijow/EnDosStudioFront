@@ -146,7 +146,7 @@ export function useCanvasEditor() {
    *  around the cut line. 2 = barely smoothed; 10 = very wavy. Default
    *  3 = subtle smoothing. Doesn't re-run OpenCV; pure JS geometry on
    *  the saved polygon. */
-  const smoothingSlider = ref<number>(3)
+  const smoothingSlider = ref<number>(10)
   /** Monotonic counter incremented every time `drawBaseLayer` paints.
    *  Consumers that need to snapshot the base canvas (e.g. the WebGL FX
    *  layer, which samples it to tint the bleed instead of overlaying

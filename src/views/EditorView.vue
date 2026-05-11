@@ -66,12 +66,12 @@ const maskVisible = ref<boolean>(true)
 // it ALSO maps to a server-side binary-mask Gaussian blur (sigma)
 // applied before the contour walker — that's what produces a vinyl-
 // cuttable line on detailed silhouettes (fur, hair, decoration spikes).
-// Default 6 lands mid-range so first-time smart-cut customers see a
-// properly rounded cut without having to hunt for the slider. Floor is
-// 2 because below that, classical Auto cut's per-vertex normal-offset
-// produces self-intersection spikes — irrelevant for smart-cut but the
-// shared slider stays consistent.
-const smoothingSlider = ref<number>(6)
+// Default 10 (max) so first-time customers see the smoothest possible
+// cut on detailed artwork (fur, hair). Floor is 2 because below that,
+// classical Auto cut's per-vertex normal-offset produces self-
+// intersection spikes — irrelevant for smart-cut but the shared
+// slider stays consistent.
+const smoothingSlider = ref<number>(10)
 // "Quitar fondo" defaults OFF — the editor preview shows the customer's
 // source image edge-to-edge inside the cut polygon (smart-cut bleed
 // background extends outward visibly). The customer opts in to clipping
@@ -775,7 +775,7 @@ async function onReset() {
     ...cropOptions.value,
     marginMm: 15,
   }
-  smoothingSlider.value = 6
+  smoothingSlider.value = 10
   // Cut-pipeline state
   cutMode.value = null
   smartCutTightPoints.value = null
