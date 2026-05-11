@@ -24,6 +24,12 @@ interface Props {
   canUndo?: boolean
   /** True when the redo stack has at least one snapshot. Enables Rehacer. */
   canRedo?: boolean
+  /** Layout orientation:
+   *  - 'vertical' (default) — desktop sidebar, stacked column of buttons
+   *  - 'horizontal' — mobile top strip, scrollable row of buttons
+   *  Used by EditorView to flip the toolbar between desktop and mobile
+   *  layouts at the lg breakpoint. */
+  orientation?: 'vertical' | 'horizontal'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -33,6 +39,7 @@ const props = withDefaults(defineProps<Props>(), {
   zoomLevel: 1,
   canUndo: false,
   canRedo: false,
+  orientation: 'vertical',
 })
 
 const emit = defineEmits<{
@@ -143,14 +150,22 @@ function onToolClick(toolId: Tool['id']) {
 <template>
   <aside
     aria-label="Herramientas del editor"
-    class="flex h-full flex-col gap-2 rounded-lg border border-border bg-surface-1 p-3"
+    :class="[
+      'rounded-lg border border-border bg-surface-1',
+      orientation === 'horizontal'
+        ? 'flex w-full gap-2 overflow-x-auto p-2'
+        : 'flex h-full flex-col gap-2 p-3',
+    ]"
   >
     <button
       v-for="tool in tools"
       :key="tool.id"
       type="button"
       :class="[
-        'flex w-full flex-col items-center gap-1 rounded-md border p-3 text-xs transition',
+        'flex items-center justify-center rounded-md border text-xs transition',
+        orientation === 'horizontal'
+          ? 'min-w-[72px] shrink-0 flex-col gap-0.5 p-2'
+          : 'w-full flex-col gap-1 p-3',
         tool.enabled
           ? 'border-primary bg-primary/10 text-primary shadow-orange'
           : 'cursor-not-allowed border-transparent text-text-muted opacity-30',
@@ -160,7 +175,7 @@ function onToolClick(toolId: Tool['id']) {
       @click="onToolClick(tool.id)"
     >
       <span
-        class="text-xl"
+        :class="orientation === 'horizontal' ? 'text-lg' : 'text-xl'"
         aria-hidden="true"
       >{{ tool.icon }}</span>
       <span class="text-center leading-tight">{{ tool.label }}</span>

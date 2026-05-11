@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppStepper from '@/components/ui/AppStepper.vue'
+import AppBottomSheet from '@/components/ui/AppBottomSheet.vue'
 import CanvasStage from '@/components/editor/CanvasStage.vue'
 import EditorToolbar from '@/components/editor/EditorToolbar.vue'
 import EditorInspector from '@/components/editor/EditorInspector.vue'
@@ -50,6 +51,40 @@ function onZoom() {
   const next = (idx + 1) % ZOOM_STEPS.length
   zoomLevel.value = ZOOM_STEPS[next]
 }
+
+// === Responsive layout ===
+//
+// The editor body has two layouts:
+//   - Desktop (lg+): 3-column grid [toolbar 120 / canvas 1fr / inspector 340]
+//   - Mobile (< lg): stacked column with toolbar as horizontal top strip,
+//     canvas centered, and inspector in a slide-up bottom sheet triggered
+//     by an "Ajustes" button.
+//
+// We track this via a media-query ref instead of pure Tailwind responsive
+// classes because the toolbar and inspector are STATEFUL Vue components —
+// rendering two copies (one per breakpoint) would double their lifecycle
+// and break the FX layer's GL context attachment. So we render ONE
+// instance of each and reposition via v-if.
+//
+// Tailwind's lg breakpoint is 1024px; matchMedia stays in sync via the
+// 'change' listener.
+const isDesktop = ref<boolean>(true)
+let mql: MediaQueryList | null = null
+function syncIsDesktop() {
+  if (mql) isDesktop.value = mql.matches
+}
+onMounted(() => {
+  mql = window.matchMedia('(min-width: 1024px)')
+  isDesktop.value = mql.matches
+  mql.addEventListener('change', syncIsDesktop)
+})
+onUnmounted(() => {
+  if (mql) mql.removeEventListener('change', syncIsDesktop)
+})
+
+// Mobile inspector lives in a bottom sheet; this toggles its visibility.
+// Closed by default — opens when the customer taps the "Ajustes" button.
+const inspectorSheetOpen = ref<boolean>(false)
 
 const canvasRef = ref<InstanceType<typeof CanvasStage> | null>(null)
 
@@ -1219,18 +1254,20 @@ onMounted(bootstrapEditor)
       {{ openCvError }}
     </div>
 
-    <!-- Editor body. Toolbar column widened (88 → 120 px) so the icon
-         + label pills don't crowd; gap between columns bumped so the
-         center canvas has visual separation from the rails.
-         Default grid alignment (items-stretch) makes both rails match
-         the tallest column. Center column = canvas + banner sets the
-         height; inspector caps its own height (max-h on its <aside>)
-         so it doesn't drive the row taller than canvas+banner. -->
+    <!-- Editor body — responsive layout:
+         Desktop (lg+): 3-column grid [toolbar 120 / canvas 1fr / inspector 340].
+           Toolbar vertical sidebar, inspector inline at right.
+         Mobile (< lg): single column stack.
+           Toolbar horizontal strip at top, canvas, status banner, then
+           a "Ajustes" sticky button that opens the inspector as a
+           bottom sheet. -->
     <div
       v-if="!isLoading"
-      class="grid gap-8 lg:grid-cols-[120px_1fr_340px]"
+      class="grid gap-4 lg:gap-8 lg:grid-cols-[120px_1fr_340px]"
     >
-      <!-- Left: toolbar -->
+      <!-- Toolbar — vertical sidebar on desktop, horizontal strip on
+           mobile. Same component instance is recreated when isDesktop
+           flips (cheap; the toolbar is stateless beyond its props). -->
       <EditorToolbar
         :is-processing="isProcessing"
         :is-open-cv-ready="openCvReady"
@@ -1241,6 +1278,7 @@ onMounted(bootstrapEditor)
         :zoom-level="zoomLevel"
         :can-undo="canUndo"
         :can-redo="canRedo"
+        :orientation="isDesktop ? 'vertical' : 'horizontal'"
         @auto-cut="onAutoCut"
         @smart-cut="onSmartCut"
         @reset="onReset"
@@ -1249,7 +1287,7 @@ onMounted(bootstrapEditor)
         @redo="onRedo"
       />
 
-      <!-- Center: canvas + status banner -->
+      <!-- Center: canvas + status banner + mobile Ajustes trigger -->
       <div class="flex flex-col gap-3">
         <!-- Zoom wrapper: CSS scale around the canvas-stack. Overflow
              hidden keeps the scaled canvas clipped to its grid cell so
@@ -1269,7 +1307,11 @@ onMounted(bootstrapEditor)
              height. -->
         <div
           class="mx-auto aspect-square w-full overflow-hidden"
-          :style="{ maxWidth: 'min(100%, calc(100svh - 320px))' }"
+          :style="{
+            maxWidth: isDesktop
+              ? 'min(100%, calc(100svh - 320px))'
+              : 'min(100%, calc(100svh - 400px))',
+          }"
         >
           <CanvasStage
             ref="canvasRef"
@@ -1330,8 +1372,24 @@ onMounted(bootstrapEditor)
         </div>
       </div>
 
-      <!-- Right: inspector -->
+      <!-- Mobile-only: open the inspector as a bottom sheet. Sticky at
+           the bottom of the center column so it sits below the status
+           banner. Hidden on desktop where the inspector renders inline
+           in its own grid column. -->
+      <button
+        v-if="!isDesktop"
+        type="button"
+        class="flex items-center justify-center gap-2 rounded-lg border border-primary bg-primary/10 px-4 py-4 text-base font-semibold text-primary transition active:bg-primary/20"
+        data-testid="open-inspector-sheet"
+        @click="inspectorSheetOpen = true"
+      >
+        <span aria-hidden="true">⚙️</span>
+        Ajustes
+      </button>
+
+      <!-- Right: inspector (desktop only) -->
       <EditorInspector
+        v-if="isDesktop"
         :mask-visible="maskVisible"
         :remove-background="removeBackground"
         :options="cropOptions"
@@ -1350,6 +1408,36 @@ onMounted(bootstrapEditor)
         @update:smoothing="smoothingSlider = $event"
       />
     </div>
+
+    <!-- Mobile inspector bottom sheet — teleported to body so the
+         backdrop/sheet sit above all other editor chrome. Opens via
+         the Ajustes button above. Inspector content scrolls inside
+         the sheet (sheet has max-h 80svh + overflow handling). -->
+    <AppBottomSheet
+      v-if="!isLoading && !isDesktop"
+      :open="inspectorSheetOpen"
+      title="Ajustes"
+      @close="inspectorSheetOpen = false"
+    >
+      <EditorInspector
+        :mask-visible="maskVisible"
+        :remove-background="removeBackground"
+        :options="cropOptions"
+        :material="material"
+        :shape="shape"
+        :with-relief="withRelief"
+        :relief-note="reliefNote"
+        :smoothing="smoothingSlider"
+        @update:mask-visible="maskVisible = $event"
+        @update:remove-background="onInspectorChange('removeBackground', $event)"
+        @update:options="cropOptions = $event"
+        @update:material="onInspectorChange('material', $event)"
+        @update:shape="onInspectorChange('shape', $event)"
+        @update:with-relief="onInspectorChange('withRelief', $event)"
+        @update:relief-note="reliefNote = $event"
+        @update:smoothing="smoothingSlider = $event"
+      />
+    </AppBottomSheet>
 
     <div
       v-else
