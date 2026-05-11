@@ -389,52 +389,74 @@ vec4 mode_holographic_with_params(
   // fiber / glow particles appear across the whole sticker.
   substrate = apply_macro_texture(substrate, u_texture_strength);
 
-  // Substrate response — strong reflective behavior. Bare vinyl is
-  // where the rainbow has to LIVE; this is the "specular reflected
-  // light" surface the customer reads as holographic foil.
-  //
-  // Two-stage brightening:
-  //   1. Mix toward WHITE at high gain (0.9 vs old 0.55) — the streaks
-  //      blow out toward pure light at peaks, like real foil catching
-  //      a directional reflection.
-  //   2. ADDITIVE iridescent bloom — adds the gradient color back ON
-  //      TOP of the highlight. This is what makes the rainbow visibly
-  //      separate (cyan / magenta / gold reads as distinct hues at
-  //      the streak, not a uniform pastel sheen).
-  // Stronger per-pixel grain (0.10 vs 0.06) plus an extra fine-grain
-  // sparkle term so the surface reads as live optical material.
-  vec3 substrate_color = mix(substrate, WHITE, clamp(highlight * 0.90, 0.0, 1.0));
-  substrate_color += grad * clamp(highlight * 0.55, 0.0, 1.0);
-  float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.10;
-  substrate_color *= grain_mul;
-  substrate_color += vec3(edge_bloom) * 0.14;
-  // Clamp to keep us in HDR-friendly range (the FX is composited over
-  // the page so >1.0 RGB would just clip — better to cap explicitly).
-  substrate_color = clamp(substrate_color, 0.0, 1.0);
-
-  // Sample the printed ink. The base canvas holds the customer's artwork
-  // (plus the smart-cut bleed pixels in the surrounding ring). u_has_base
-  // gates whether we have a real snapshot yet — pre-load frames fall
-  // back to ink_density=0 → pure substrate everywhere.
+  // Sample the printed ink. The base canvas holds the customer's
+  // artwork (plus the smart-cut bleed pixels when Quitar fondo is OFF).
+  // u_has_base gates whether we have a real snapshot yet.
   vec4 base_sample = texture2D(u_base_tex, v_uv);
   vec3 base_rgb = base_sample.rgb;
   float base_alpha = base_sample.a * u_has_base;
 
-  // === Ink density ===
+  // === Bleed substrate (two variants, blended by base_alpha) ===
   //
-  // "How much pigment covers the vinyl here?" Drives everything:
-  //   - density 0 → pure substrate (bleed, transparent gaps)
-  //   - density 1 → mostly ink, substrate only catches specular highlights
-  //   - density 0.3..0.7 → THE INTERESTING RANGE — anti-aliased fur edges,
-  //     semi-transparent strokes, halftones. These pixels fuse into the
-  //     substrate visibly, killing the matte-halo "PNG cutout" look.
+  // The bleed region has to behave correctly in TWO scenarios the
+  // customer toggles between with "Quitar fondo":
   //
-  // Driven mostly by base alpha (transparency = no ink); slightly
-  // reduced for very bright pixels so specular punches through bright
-  // ink at highlight zones. Saturated colors (purple fur, cyan eyes)
-  // stay near density 1 — the customer's color choices are preserved.
+  //   QF ON  → bleed area is TRANSPARENT (base_alpha = 0). The FX must
+  //            paint the holographic substrate as the visible material.
+  //            But not at full alpha — that produces "rainbow plastic
+  //            glued behind the gorilla". We want vinyl-with-sweep, not
+  //            slab-of-rainbow.
+  //
+  //   QF OFF → bleed area is OPAQUE source pixels (base_alpha = 1, e.g.
+  //            the teal background extending outward from a smart-cut).
+  //            The customer's mental model is "foil over the existing
+  //            background". So we TINT the base — multiply it with the
+  //            substrate gradient — preserving the teal while adding
+  //            visible rainbow modulation.
+  //
+  // Both are computed below, then blended by base_alpha for a continuous
+  // outcome regardless of QF state.
+
+  // (a) Bare-substrate variant — what the bleed looks like when there's
+  //     no source pixel underneath. WHITE-mix at moderate gain (0.7,
+  //     not the previous 0.9) so peaks don't blow out completely,
+  //     plus a smaller additive bloom. No "constant grad background"
+  //     contribution — that was making transparent bleed read as flat
+  //     rainbow plastic.
+  vec3 bare_substrate = mix(substrate, WHITE, clamp(highlight * 0.70, 0.0, 1.0));
+  bare_substrate += grad * clamp(highlight * 0.45, 0.0, 1.0);
+
+  // (b) Tinted-base variant — what the bleed looks like when there's
+  //     a colored source pixel (teal) underneath. Multiply blend
+  //     preserves the hue; gain ×1.6 compensates so the result isn't
+  //     dimmer than the source. Highlights add visible iridescent
+  //     bloom on top — the rainbow streaks read across the teal.
+  vec3 tinted_substrate = base_rgb * grad * 1.6;
+  tinted_substrate += grad * clamp(highlight * 0.55, 0.0, 1.0);
+  tinted_substrate = mix(base_rgb, tinted_substrate, 0.80);
+
+  // Blend the two variants by base_alpha — continuous in alpha, no
+  // branching by QF state. Anti-aliased smart-cut bleed edges (where
+  // base_alpha is partial) get a smooth transition.
+  vec3 substrate_color = mix(bare_substrate, tinted_substrate, base_alpha);
+
+  float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.10;
+  substrate_color *= grain_mul;
+  substrate_color += vec3(edge_bloom) * 0.14;
+  substrate_color = clamp(substrate_color, 0.0, 1.0);
+
+  // === Ink density (artwork interior only) ===
+  //
+  // Inside the tight artwork silhouette, density says "how much pigment
+  // covers the vinyl here?" Drives the substrate-vs-ink mix downstream.
+  //
+  // Gated by in_artwork so the bleed region never gets "ink mode" —
+  // critical for QF OFF where base_alpha is 1 everywhere. Without this
+  // gate, the QF-off bleed would suppress the substrate as if it were
+  // dense ink, and the rainbow would disappear (the "current good HEAD"
+  // bug from image #12).
   float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
-  float ink_density = base_alpha * (1.0 - base_brightness * 0.25);
+  float ink_density = in_artwork * base_alpha * (1.0 - base_brightness * 0.25);
   ink_density = clamp(ink_density, 0.0, 1.0);
 
   // === Ink response to substrate ===
@@ -471,12 +493,24 @@ vec4 mode_holographic_with_params(
   // === Composition ===
   vec3 rgb = mix(substrate_color, ink_color, ink_density);
 
-  // Alpha: bare substrate dominates the bleed; heavy ink mostly lets
-  // the base canvas's artwork through (we only contribute specular).
-  // Highlight boost is BIGGER now (0.35 vs 0.22) so the additive
-  // specular has alpha visibility on dark ink — that's what makes the
-  // rainbow streaks pop on the gorilla's blacks.
-  float alpha = mix(p.substrate_alpha, 0.18, ink_density) + highlight * 0.35;
+  // Alpha — continuous in (base_alpha, ink_density):
+  //
+  //   Transparent bleed (base_alpha=0, density=0) → p.substrate_alpha.
+  //     We're painting the only thing visible; high alpha is correct.
+  //
+  //   Opaque colored bleed (base_alpha=1, in_artwork=0, density=0) →
+  //     reduced alpha. The tinted_substrate already CONTAINS the base
+  //     color (multiplied through), so we paint it visibly but let the
+  //     raw base canvas show through underneath enough that the teal
+  //     reads as the dominant ground. Caps "rainbow plastic" feel.
+  //
+  //   Inside artwork (density high) → low alpha. Base canvas's artwork
+  //     shows through ~80%; we only contribute specular.
+  //
+  //   + highlight*0.35 across the board → additive specular punches
+  //     through on dark ink and brightens streaks on bare substrate.
+  float bleed_alpha_mix = mix(p.substrate_alpha, p.substrate_alpha * 0.55, base_alpha * (1.0 - in_artwork));
+  float alpha = mix(bleed_alpha_mix, 0.18, ink_density) + highlight * 0.35;
   alpha = clamp(alpha, 0.0, 0.98);
 
   // Mask by in_cut so the FX layer's footprint is exactly the sticker.
@@ -558,12 +592,16 @@ MaterialParams params_eggshell_holografico() {
 //   - Edge band — luminance leaks INWARD from the cut boundary, a
 //     diagnostic signal that "this material glows"
 vec4 mode_luminescent(float in_cut, float in_artwork) {
-  // Slow autonomous pulse — 0.92..1.00 over a ~3s cycle.
-  float pulse = 0.92 + 0.08 * sin(u_time * 2.1);
+  // Slow autonomous pulse — 0.92..1.04 over a ~3s cycle. Peak briefly
+  // pushes above 1.0 so the material reads as actively emitting at
+  // pulse highs (vs statically tinted).
+  float pulse = 0.94 + 0.10 * sin(u_time * 2.1);
 
-  // Phosphorescent palette — bright yellow-green with a teal cool tone.
-  vec3 inner_glow = vec3(0.70, 1.00, 0.40);
-  vec3 outer_glow = vec3(0.50, 0.95, 0.85);
+  // Phosphorescent palette — brighter than before but not blown out.
+  // Inner yellow-green pushed to (0.78, 1.00, 0.35) for a more
+  // saturated fluorescent peak; outer cyan-green slightly lifted.
+  vec3 inner_glow = vec3(0.78, 1.00, 0.35);
+  vec3 outer_glow = vec3(0.55, 1.00, 0.88);
 
   // Mouse-anchored hot spot — broad, soft.
   vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
@@ -578,41 +616,56 @@ vec4 mode_luminescent(float in_cut, float in_artwork) {
   vec4 base_sample = texture2D(u_base_tex, v_uv);
   vec3 base_rgb = base_sample.rgb;
   float base_alpha = base_sample.a * u_has_base;
-  float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
-  float ink_density = base_alpha * (1.0 - base_brightness * 0.25);
-  ink_density = clamp(ink_density, 0.0, 1.0);
 
-  // Substrate — the glow itself. Varies inner/outer based on whether
-  // we're near the cut edge (cooler teal at the boundary; brighter
-  // yellow-green deep inside, like real glow vinyl where the glow
-  // accumulates in the bulk). edge_band is high at the boundary, low
-  // in the bulk — so we mix the other way: inner deep, outer at edge.
+  // Substrate — the glow itself. Inner-glow color deep inside, outer
+  // cooler at the edge boundary. Pulse-modulated.
   float boundary_ness = clamp(edge_band, 0.0, 1.0);
   vec3 substrate = mix(inner_glow, outer_glow, boundary_ness) * pulse;
   substrate = apply_macro_texture(substrate, u_texture_strength);
 
-  // Substrate brightening near the mouse hotspot (the "fresh-charged"
-  // bright region near the cursor).
-  vec3 substrate_color = substrate + vec3(hotspot * 0.20);
-  // Extra bloom at the cut edge — the visible "phosphorescent rim".
-  substrate_color += vec3(edge_band * 0.18);
+  // === Bleed substrate, two variants blended by base_alpha ===
+  //
+  // Same continuous-in-base_alpha model as holographic. With QF OFF
+  // the bleed has opaque source pixels (teal) — we want the glow to
+  // TINT them, not replace them. With QF ON the bleed is empty — we
+  // paint the glow as the visible material, but not at full opacity
+  // so it reads as vinyl rather than lime-green plastic.
 
-  // Ink response — glow vinyl tints the printed ink slightly with its
-  // own color (a green-tinted version of the customer's pigment is
-  // what you'd see under UV). Low blend factor — mostly the artwork
-  // shows through.
+  // (a) Bare glow — transparent base. The substrate IS what we see.
+  vec3 bare_glow = substrate + inner_glow * hotspot * 0.25;
+  bare_glow += inner_glow * edge_band * 0.22;
+
+  // (b) Tinted-base glow — opaque base. Multiply blend (base × glow)
+  //     preserves the base hue; gain compensates so the result isn't
+  //     dimmer than the source. Additive edge-glow leaks past visibly.
+  vec3 tinted_glow = base_rgb * substrate * 1.5;
+  tinted_glow += inner_glow * edge_band * 0.20;
+  tinted_glow = mix(base_rgb, tinted_glow, 0.75);
+
+  vec3 substrate_color = mix(bare_glow, tinted_glow, base_alpha);
+  substrate_color = clamp(substrate_color, 0.0, 1.0);
+
+  // === Ink density — gated by in_artwork ===
+  //
+  // Critical: without the in_artwork gate, QF OFF (opaque base in bleed)
+  // would suppress the glow halo exactly where it should shine through.
+  float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
+  float ink_density = in_artwork * base_alpha * (1.0 - base_brightness * 0.25);
+  ink_density = clamp(ink_density, 0.0, 1.0);
+
+  // Ink response — glow tints the printed ink mildly + additive edge leak.
   vec3 ink_color = mix(base_rgb, base_rgb * substrate * 1.5, 0.15);
-  // Ink near the cut edge picks up a small edge-glow boost — sells the
-  // "the glow leaks past the ink at the silhouette" feel.
-  ink_color += vec3(edge_band * 0.10);
+  ink_color += inner_glow * edge_band * 0.18;
+  ink_color = clamp(ink_color, 0.0, 1.0);
 
   vec3 rgb = mix(substrate_color, ink_color, ink_density);
 
-  // Alpha: bleed solid glow; ink mostly transparent so the base canvas
-  // artwork shows through; small boost at edges/hotspot for the visible
-  // glow leak.
-  float alpha = mix(0.85, 0.18, ink_density) + edge_band * 0.20 + hotspot * 0.08;
-  alpha = clamp(alpha, 0.0, 0.95);
+  // Alpha — continuous: lighter over opaque colored bleed (let the
+  // teal ground show through the tint); heavier over transparent
+  // bleed (paint the only material visible); minimal over ink.
+  float bleed_alpha_mix = mix(0.90, 0.55, base_alpha * (1.0 - in_artwork));
+  float alpha = mix(bleed_alpha_mix, 0.20, ink_density) + edge_band * 0.22 + hotspot * 0.10;
+  alpha = clamp(alpha, 0.0, 0.96);
 
   return vec4(rgb, alpha * in_cut);
 }
