@@ -217,8 +217,21 @@ onMounted(loadOrder)
     <AppStepper
       :steps="steps"
       :current="3"
-      class="mb-10"
+      class="mb-6 md:mb-10"
     />
+
+    <!-- Mobile-only back link. The "Volver a editar" button at the
+         bottom of the form is hard to find on mobile (long scroll
+         past materials + size + quantity + add-ons). Desktop has its
+         own "Volver al editor" affordance inside the material section. -->
+    <AppButton
+      variant="ghost"
+      size="sm"
+      class="mb-4 lg:hidden"
+      @click="onBack"
+    >
+      ← Volver al editor
+    </AppButton>
 
     <div class="grid gap-8 lg:grid-cols-[1fr_360px]">
       <!-- LEFT: form -->
