@@ -48,11 +48,25 @@ const stepNodes = computed(() =>
         >
           {{ step.number }}
         </span>
+        <!-- Step labels are hidden < md to keep the stepper from
+             overflowing on mobile (4 labels + 3 stretchy connectors
+             don't fit in a 375 px viewport). The circled numbers +
+             active/done coloring are enough signal; the page heading
+             above already tells the customer which step they're on. -->
         <span
           :class="[
-            'text-sm',
+            'hidden text-sm md:inline',
             step.state === 'pending' ? 'text-text-muted' : 'text-text',
           ]"
+        >
+          {{ step.label }}
+        </span>
+        <!-- On mobile only, show the ACTIVE step's label inline so the
+             customer has at least one piece of text confirming where
+             they are. -->
+        <span
+          v-if="step.state === 'active'"
+          class="text-sm text-text md:hidden"
         >
           {{ step.label }}
         </span>
