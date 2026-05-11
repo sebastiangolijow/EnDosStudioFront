@@ -34,6 +34,20 @@ const order = ref<Order | null>(null)
 const isLoading = ref<boolean>(true)
 const isProcessing = ref<boolean>(false)
 
+/**
+ * Live quote for sticker orders. The backend's `total_amount_cents` is
+ * only populated after `place_order` runs (which happens when the
+ * customer hits "Confirmar y pagar"). Before that the order shows 0,
+ * so the pre-payment summary would say €0.00 — the customer panics.
+ *
+ * Fix: as soon as the order loads, hit `/orders/quote/` (the pure-
+ * function pricing endpoint that doesn't touch the DB) with the
+ * order's specs to get a live total. Same authoritative formula the
+ * backend will use at place_order time. Catalog orders skip this and
+ * use product_detail.price_cents × product_quantity (see totalEur).
+ */
+const quotedTotalEur = ref<string>('')
+
 const isCatalogOrder = computed<boolean>(() => order.value?.kind === 'catalog')
 const stepper = computed(() => (isCatalogOrder.value ? CATALOG_STEPS : STICKER_STEPS))
 const stepperCurrent = computed(() => (isCatalogOrder.value ? 2 : 4))
@@ -81,7 +95,10 @@ const totalEur = computed<string>(() => {
     const cents = order.value.product_detail.price_cents * order.value.product_quantity
     return (cents / 100).toFixed(2)
   }
-  return order.value.total_eur ?? ''
+  // Sticker order, pre-place_order: use the live quote we fetched in
+  // loadOrder. Empty string while the quote is in flight — OrderSummary
+  // shows the CTA as disabled in that state via the `!totalEur` check.
+  return quotedTotalEur.value || order.value.total_eur || ''
 })
 
 const formIsValid = computed<boolean>(
@@ -102,6 +119,44 @@ async function loadOrder() {
   try {
     const fetched = await ordersService.retrieve(orderUuid.value)
     order.value = fetched
+
+    // Fire the live quote for sticker orders that haven't been placed
+    // yet. Catalog orders compute the line total client-side from
+    // product_detail; nothing to fetch.
+    if (
+      fetched.kind === 'sticker' &&
+      fetched.total_amount_cents === 0 &&
+      fetched.material &&
+      fetched.width_mm &&
+      fetched.height_mm &&
+      fetched.quantity
+    ) {
+      // Don't await — the summary card just shows '—' until the quote
+      // resolves; blocking the whole loadOrder on this would feel laggy.
+      // Failures fall back to the order's stored total (still 0, but the
+      // summary already handles that gracefully via the empty-string
+      // disabled-CTA path).
+      ordersService
+        .quote({
+          material: fetched.material,
+          width_mm: fetched.width_mm,
+          height_mm: fetched.height_mm,
+          quantity: fetched.quantity,
+          with_relief: fetched.with_relief,
+          with_tinta_blanca: fetched.with_tinta_blanca,
+          with_barniz_brillo: fetched.with_barniz_brillo,
+          with_barniz_opaco: fetched.with_barniz_opaco,
+        })
+        .then((q) => {
+          quotedTotalEur.value = q.total_eur
+        })
+        .catch(() => {
+          // Silent: the summary will keep showing the order's stored
+          // total. Not worth a toast — the customer can still hit
+          // Confirmar y pagar; place_order will compute the real total
+          // on the backend.
+        })
+    }
 
     // If shipping is already filled (revisit), hydrate the form
     if (fetched.recipient_name) recipientName.value = fetched.recipient_name
