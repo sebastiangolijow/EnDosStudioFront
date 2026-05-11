@@ -228,16 +228,19 @@ struct MaterialParams {
   // Hotspot focus exponent. Higher = tighter hot spot at the mouse.
   // Lower = broader spread.
   float hotspot_focus;
-  // Max alpha contribution over the artwork interior at peak highlight.
-  // 0.55 = standard foil. Higher for "transparent" SKUs (more visible
-  // through). Lower for "eggshell" (subtler).
-  float artwork_alpha_peak;
+  // How strongly the substrate's iridescence modulates the printed
+  // ink. Foil = strong (0.45 — the customer's purple gets a visible
+  // holographic tilt). Eggshell = mild (0.20 — paper foil only adds
+  // a faint warm sheen to the ink).
+  float ink_substrate_blend;
   // Highlight color blend toward white. Foil = vivid (low blend, ~0.5);
   // eggshell = soft (more white, ~0.8); makes the bands read like soft
   // diffused sheen instead of crisp specular.
   float highlight_white_mix;
-  // Bleed alpha — full holographic in the bleed ring.
-  float bleed_alpha;
+  // Overall alpha ceiling for the FX paint over BARE substrate (density=0
+  // regions: bleed ring + transparent edge pixels). Foil = high (0.95),
+  // eggshell = lower (0.55) so its halo PNG character shows through.
+  float substrate_alpha;
 };
 
 vec3 sample_iridescence(int palette_id, float t) {
@@ -276,37 +279,48 @@ vec4 mode_holographic_with_params(
 ) {
   // Iridescent gradient parameter. Mouse drives the phase shift —
   // moving the cursor slides which colors are visible across the
-  // sticker, simulating "tilting the foil to catch light at a
-  // different angle". Two-octave noise warp gives organic color
-  // boundaries instead of straight diagonal stripes.
-  float n1 = noise(v_uv * 3.0) * 0.18;
-  float n2 = noise(v_uv * 9.0) * 0.06;
-  float warp = n1 + n2;
+  // sticker. Three-octave noise warp (was two) gives sharper, more
+  // organic color boundaries — readable rainbow separation instead
+  // of smooth pastel diagonals. The hash term at the highest octave
+  // adds a fine sparkle/dithering on the color separation.
+  float n1 = noise(v_uv * 3.5) * 0.28;
+  float n2 = noise(v_uv * 11.0) * 0.12;
+  float n3 = noise(v_uv * 28.0) * 0.05;
+  float warp = n1 + n2 + n3;
   float diag = (v_uv.x + v_uv.y) * 0.5;
   float phase = (u_mouse.x - 0.5) * 1.5 + (u_mouse.y - 0.5) * 0.8;
   float t = diag + warp + phase;
   vec3 grad = sample_iridescence(p.palette_id, t);
+  // Boost gradient saturation toward primary stops — pushes mid-mix
+  // pastels back toward vivid cyan/magenta/gold so the rainbow reads
+  // as "spectral light" rather than "watercolor". Power curve on each
+  // channel deepens the saturation without shifting hue.
+  float grad_max = max(max(grad.r, grad.g), grad.b);
+  float grad_min = min(min(grad.r, grad.g), grad.b);
+  float grad_lum = (grad_max + grad_min) * 0.5;
+  // Saturate: pull each channel away from grayscale luminance by 25%.
+  grad = grad_lum + (grad - vec3(grad_lum)) * 1.25;
+  grad = clamp(grad, 0.0, 1.0);
   // Modulate by the macro texture (foil dot / paper fiber grain) at
   // u_texture_strength. No-op when no macro PNG is bundled.
   grad = apply_macro_texture(grad, u_texture_strength);
 
   // === Specular highlight pattern ===
   //
-  // This is the heart of the new approach. We compute a 0..1 mask that
-  // says "where would light reflections actually appear on this
-  // sticker if it were tilted toward the cursor?" Then we use that
-  // mask to drive the artwork-interior alpha — most pixels get 0,
-  // only the simulated specular zones get visible iridescence.
+  // Real holographic vinyl shows TWO scales of optical response:
+  //   - Broad iridescent zones (the diagonal sweep bands)
+  //   - Fine high-frequency sparkle (the diffraction grain catching
+  //     light at many sub-pixel angles)
+  // The previous version only had the broad bands. Adding a 4th
+  // high-frequency band PLUS a fine-grain sparkle term gives the
+  // material the "live optical surface" character — not flat-tinted
+  // plastic.
   //
-  // The pattern combines:
-  //   1. A broad mouse-anchored hot spot (where the "light" hits
-  //      hardest)
-  //   2. Three thin diagonal bands at offsets, like the streaks of
-  //      reflection you see on real holographic foil
-  //
-  // Both are squared/exp'd so they're MOSTLY zero — the bands are
-  // narrow streaks, not broad swaths. That's the "sparse highlight"
-  // architecture.
+  // Bands are SHARPER (×1.6 sharpness multiplier) and brighter
+  // (amplitudes summed to >1.0 before clamp) so the streaks snap into
+  // crisp light rather than diffuse haze. Combined with stronger
+  // white-peak mixing downstream, this is what makes the rainbow
+  // bands actually read as spectral reflections.
 
   // Hot spot at the mouse position. p.hotspot_focus controls the
   // tightness — foil = sharp small spot, eggshell = broader softer spot.
@@ -314,89 +328,159 @@ vec4 mode_holographic_with_params(
   float mouse_dist = distance(v_uv, mouse_pos);
   float hotspot = exp(-mouse_dist * mouse_dist * p.hotspot_focus);
 
-  // Diagonal sweep bands — narrow streaks across the surface. Sharpness
-  // per material via p.band_sharpness_*: foil bands are tight + crisp;
-  // eggshell bands are wide + soft so the iridescence reads diffuse.
+  // Diagonal sweep bands — narrow streaks across the surface. Four
+  // bands at staggered frequencies (was three). The 4th is high-
+  // frequency and tight — the "fine sparkle" that fixes the "too
+  // smooth and uniform" gradient complaint.
   float band_axis = v_uv.x * 1.2 - v_uv.y * 0.6 + (u_mouse.x - 0.5) * 0.3;
-  float b1 = exp(-pow(fract(band_axis * 1.4 + 0.10) - 0.5, 2.0) * p.band_sharpness_1);
-  float b2 = exp(-pow(fract(band_axis * 2.1 + 0.55) - 0.5, 2.0) * p.band_sharpness_2);
-  float b3 = exp(-pow(fract(band_axis * 3.0 + 0.85) - 0.5, 2.0) * p.band_sharpness_3);
-  float bands = b1 * 0.65 + b2 * 0.45 + b3 * 0.30;
+  float b1 = exp(-pow(fract(band_axis * 1.4 + 0.10) - 0.5, 2.0) * p.band_sharpness_1 * 1.6);
+  float b2 = exp(-pow(fract(band_axis * 2.1 + 0.55) - 0.5, 2.0) * p.band_sharpness_2 * 1.6);
+  float b3 = exp(-pow(fract(band_axis * 3.0 + 0.85) - 0.5, 2.0) * p.band_sharpness_3 * 1.6);
+  float b4 = exp(-pow(fract(band_axis * 5.5 + 0.30) - 0.5, 2.0) * p.band_sharpness_1 * 2.8);
+  float bands = b1 * 0.85 + b2 * 0.65 + b3 * 0.45 + b4 * 0.35;
+
+  // Diffraction sparkle — high-frequency hash dithered by the bands.
+  // Pixel-scale optical noise that reads as the foil's micro-grating
+  // catching light at random sub-angles. Multiplied by bands so it
+  // only fires INSIDE the streak zones — not a uniform sparkle field
+  // (which would look like TV static), but sparkle THAT FOLLOWS the
+  // band sweep (which reads as physical diffraction).
+  float sparkle = (hash(v_uv * 320.0 + u_mouse * 4.0) - 0.5) * 0.6;
+  sparkle = sparkle * smoothstep(0.2, 0.8, bands);
 
   // Combined highlight mask. Bands × hotspot focuses reflection energy
-  // near the cursor — matches real specular behavior.
-  float highlight = clamp(bands * (0.4 + hotspot * 0.9), 0.0, 1.0);
+  // near the cursor — matches real specular behavior. Sparkle is added
+  // OUTSIDE the clamp so it can briefly punch above 1.0, producing
+  // crisp white pinpoint reflections inside the band streaks.
+  float highlight = clamp(bands * (0.45 + hotspot * 1.10), 0.0, 1.2);
+  highlight += sparkle * hotspot;
+  highlight = clamp(highlight, 0.0, 1.4);
 
   // Soft cut-edge bloom — thin diffused-light band just inside the
-  // polygon boundary. Same in all modes.
+  // polygon boundary. Adds a subtle inner-rim glow that fuses the
+  // contour into the substrate.
   float edge_bloom = smoothstep(0.0, 0.45, in_cut)
                    * (1.0 - smoothstep(0.45, 1.0, in_cut));
 
-  // === Bleed area — TINT the underlying base, don't overlay ===
+  // === UNIFIED SUBSTRATE MODEL ===
   //
-  // Mental model: holographic foil is a transparent iridescent laminate.
-  // Real foil over a teal substrate still reads as teal — the laminate
-  // adds a tilt-dependent hue shift, never replaces the base color.
+  // The whole interior of the cut polygon is ONE physical material:
+  // holographic vinyl. The customer's artwork is INK PRINTED on that
+  // vinyl. So every pixel inside the cut is composed as:
   //
-  // Smart-cut now preserves the customer's source RGB in the bleed ring
-  // (the "background extends outward" feel). Reading those pixels back
-  // here and tinting them — instead of painting iridescence on top —
-  // gives us the target look: teal bleed stays teal, just with rainbow
-  // shimmer modulating its hue.
+  //   final = ink × ink_density   +   substrate × (1 - ink_density)
   //
-  // Composition:
-  //   1. base_rgb       — the underlying canvas color (teal in the gorilla case)
-  //   2. tinted         — base × gradient × gain — multiply blend preserves
-  //                       base hue, gradient adds chromatic modulation
-  //   3. + highlights   — brighten only at sparse specular zones (the "shimmer")
-  //   4. mix(base, …)   — final has at most 70% tint contribution, so base
-  //                       color is always recognizable
-  //   5. has_base gate  — when no snapshot is uploaded (e.g. before first
-  //                       render) OR the base canvas is transparent here
-  //                       (geometric shapes with no source pixels in the
-  //                       bleed ring), fall back to the legacy paint-on-top
-  //                       gradient so the customer still sees the foil
-  //                       effect — the no-op visual matches the previous
-  //                       FX layer behavior.
+  // …with shared shimmer/specular response across both terms so the
+  // sticker reads as a single material, not "artwork PNG on top of
+  // holographic paper".
+  //
+  // Why this matters: the old branch model painted ink_density=1 over
+  // the artwork interior and ink_density=0 over the bleed, with a
+  // hard transition at the silhouette. Anti-aliased fur-edge pixels
+  // (alpha ≈ 0.4) were classified as artwork → original matte color
+  // preserved → visible "PNG cutout" halo. The new model lets those
+  // edge pixels FUSE into the substrate because their density is
+  // low → they pick up substrate color in proportion to (1 - density).
+
+  vec3 substrate = grad;
+
+  // Macro texture modulation moved here so it modulates the substrate
+  // (not split between branches as before). Foil dot grain / paper
+  // fiber / glow particles appear across the whole sticker.
+  substrate = apply_macro_texture(substrate, u_texture_strength);
+
+  // Substrate response — strong reflective behavior. Bare vinyl is
+  // where the rainbow has to LIVE; this is the "specular reflected
+  // light" surface the customer reads as holographic foil.
+  //
+  // Two-stage brightening:
+  //   1. Mix toward WHITE at high gain (0.9 vs old 0.55) — the streaks
+  //      blow out toward pure light at peaks, like real foil catching
+  //      a directional reflection.
+  //   2. ADDITIVE iridescent bloom — adds the gradient color back ON
+  //      TOP of the highlight. This is what makes the rainbow visibly
+  //      separate (cyan / magenta / gold reads as distinct hues at
+  //      the streak, not a uniform pastel sheen).
+  // Stronger per-pixel grain (0.10 vs 0.06) plus an extra fine-grain
+  // sparkle term so the surface reads as live optical material.
+  vec3 substrate_color = mix(substrate, WHITE, clamp(highlight * 0.90, 0.0, 1.0));
+  substrate_color += grad * clamp(highlight * 0.55, 0.0, 1.0);
+  float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.10;
+  substrate_color *= grain_mul;
+  substrate_color += vec3(edge_bloom) * 0.14;
+  // Clamp to keep us in HDR-friendly range (the FX is composited over
+  // the page so >1.0 RGB would just clip — better to cap explicitly).
+  substrate_color = clamp(substrate_color, 0.0, 1.0);
+
+  // Sample the printed ink. The base canvas holds the customer's artwork
+  // (plus the smart-cut bleed pixels in the surrounding ring). u_has_base
+  // gates whether we have a real snapshot yet — pre-load frames fall
+  // back to ink_density=0 → pure substrate everywhere.
   vec4 base_sample = texture2D(u_base_tex, v_uv);
   vec3 base_rgb = base_sample.rgb;
-  float base_avail = u_has_base * base_sample.a;
-  // Multiply tint with gain. ×1.6 compensates so mid-bright base ×
-  // mid-bright grad doesn't dim the overall result — keeps brightness
-  // similar to the source.
-  vec3 tinted = base_rgb * grad * 1.6;
-  // Sparse highlight brightening — same highlight mask the artwork
-  // branch uses, so the shimmer streaks sweep across base and artwork
-  // in concert (sells the "single laminate over the whole sticker" feel).
-  tinted = mix(tinted, WHITE, clamp(highlight * 0.35, 0.0, 1.0));
-  // Final tinted bleed — at most 70% of the way from base to tint, so
-  // the underlying hue (teal) is never lost.
-  vec3 tinted_bleed = mix(base_rgb, tinted, 0.7);
-  // Legacy gradient overlay — fallback when base snapshot unavailable.
-  // Kept verbatim from the previous version of this branch.
-  vec3 legacy_bleed = mix(grad, WHITE, clamp(highlight * 0.5, 0.0, 1.0));
-  // Smooth choice between the two — clamped multiply so the fallback
-  // doesn't suddenly snap in when the base canvas's alpha edge falls
-  // here (the smart-cut RGBA has a thin alpha-soft boundary).
-  vec3 bleed_color = mix(legacy_bleed, tinted_bleed, clamp(base_avail, 0.0, 1.0));
-  float grain_mul = 1.0 + (hash(v_uv * 800.0) - 0.5) * 0.06;
-  bleed_color *= grain_mul;
-  bleed_color += vec3(edge_bloom) * 0.12;
+  float base_alpha = base_sample.a * u_has_base;
 
-  // === Artwork interior — sparse highlights, artwork preserved ===
-  vec3 artwork_color = mix(
-    grad, WHITE,
-    clamp(highlight * p.highlight_white_mix, 0.0, 1.0)
-  );
-  float artwork_alpha = highlight * p.artwork_alpha_peak;
+  // === Ink density ===
+  //
+  // "How much pigment covers the vinyl here?" Drives everything:
+  //   - density 0 → pure substrate (bleed, transparent gaps)
+  //   - density 1 → mostly ink, substrate only catches specular highlights
+  //   - density 0.3..0.7 → THE INTERESTING RANGE — anti-aliased fur edges,
+  //     semi-transparent strokes, halftones. These pixels fuse into the
+  //     substrate visibly, killing the matte-halo "PNG cutout" look.
+  //
+  // Driven mostly by base alpha (transparency = no ink); slightly
+  // reduced for very bright pixels so specular punches through bright
+  // ink at highlight zones. Saturated colors (purple fur, cyan eyes)
+  // stay near density 1 — the customer's color choices are preserved.
+  float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
+  float ink_density = base_alpha * (1.0 - base_brightness * 0.25);
+  ink_density = clamp(ink_density, 0.0, 1.0);
 
-  // Compose by stencil weighting.
-  float bleed_factor = in_cut * (1.0 - in_artwork);
-  float artwork_factor = in_cut * in_artwork;
-  vec3 rgb = bleed_color * bleed_factor + artwork_color * artwork_factor;
-  float alpha = p.bleed_alpha * bleed_factor + artwork_alpha * artwork_factor;
+  // === Ink response to substrate ===
+  //
+  // Ink isn't independent of the laminate — real holographic printing
+  // tints the pigment too. Cool foil substrate × purple ink = purple
+  // with cyan/green tilt under the cursor (matches the reference).
+  // p.ink_substrate_blend controls how strong this is per material.
+  vec3 ink_color = base_rgb;
+  ink_color = mix(ink_color, ink_color * substrate * 1.6, p.ink_substrate_blend);
+  // ADDITIVE iridescent specular on the ink side. Previous version did
+  // mix(ink, WHITE, highlight) which dimmed contrast on dark pixels —
+  // black outlines got grayed instead of getting a bright colored
+  // gleam. Additive grad×highlight paints the rainbow LIGHT on top of
+  // the pigment: blacks stay black at the base, but at highlight zones
+  // they pick up vivid cyan/magenta/gold streaks. This is the
+  // "spectral reflected light, not color tinting" behavior the
+  // reference shows on the gorilla's black outlines.
+  //
+  // The strength factor combines per-material highlight_white_mix
+  // (foil sharp, eggshell soft) with a global gain. The result is
+  // capped because pure additive on bright ink could over-saturate;
+  // the min(ink + bloom, ink + WHITE*highlight*0.8) keeps very bright
+  // pixels from blowing past white.
+  vec3 ink_bloom = grad * clamp(highlight * p.highlight_white_mix * 0.95, 0.0, 1.2);
+  // Sparkle pinpoints — when the high-frequency sparkle fires on ink,
+  // add a near-white pulse on top of the colored bloom. These are the
+  // "tiny flashes" of real diffraction grating reflections.
+  ink_bloom += vec3(clamp(sparkle * 1.2, 0.0, 1.0));
+  ink_color = ink_color + ink_bloom;
+  // Clamp so the additive can't push outside the displayable range.
+  ink_color = clamp(ink_color, 0.0, 1.0);
 
-  return vec4(rgb, alpha);
+  // === Composition ===
+  vec3 rgb = mix(substrate_color, ink_color, ink_density);
+
+  // Alpha: bare substrate dominates the bleed; heavy ink mostly lets
+  // the base canvas's artwork through (we only contribute specular).
+  // Highlight boost is BIGGER now (0.35 vs 0.22) so the additive
+  // specular has alpha visibility on dark ink — that's what makes the
+  // rainbow streaks pop on the gorilla's blacks.
+  float alpha = mix(p.substrate_alpha, 0.18, ink_density) + highlight * 0.35;
+  alpha = clamp(alpha, 0.0, 0.98);
+
+  // Mask by in_cut so the FX layer's footprint is exactly the sticker.
+  return vec4(rgb, alpha * in_cut);
 }
 
 // === Per-material parameter presets ===
@@ -408,121 +492,129 @@ vec4 mode_holographic_with_params(
 // that match each material's physical character.
 
 MaterialParams params_holografico() {
-  // Cool foil — vivid neon palette, sharp tight bands, focused hot
-  // spot, moderate highlight whiteness. The "default" holographic.
+  // Cool foil — vivid neon palette, sharp tight bands, focused hot spot.
+  // Substrate dominates the bleed (high substrate_alpha) and tilts the
+  // ink visibly (moderate ink_substrate_blend).
   return MaterialParams(
     0,        // palette_id: cool
     80.0,     // band_sharpness_1
     120.0,    // band_sharpness_2
     160.0,    // band_sharpness_3
     8.0,      // hotspot_focus (tight)
-    0.55,     // artwork_alpha_peak
+    0.45,     // ink_substrate_blend (purples get visible foil tilt)
     0.7,      // highlight_white_mix
-    0.95      // bleed_alpha
+    0.95      // substrate_alpha (bleed reads as pure foil)
   );
 }
 
 MaterialParams params_holografico_transparente() {
-  // Same cool palette + sharp bands as holografico, but stronger
-  // visibility of iridescence over the artwork because there's no
-  // opaque white vinyl backing. Higher artwork_alpha_peak. Slightly
-  // brighter highlight (more white-mix) for the "translucent foil
-  // catching light from both sides" feel.
+  // Same cool palette + sharp bands. The "transparent" character now
+  // shows in TWO ways: substrate_alpha slightly lower so the canvas
+  // checker reads through bare regions; ink_substrate_blend higher so
+  // ink picks up more substrate character (no opaque backing to mask it).
   return MaterialParams(
     0,        // palette_id: cool
-    100.0,    // band_sharpness_1 (slightly tighter for "thin clear film" feel)
+    100.0,    // band_sharpness_1 (tighter "thin clear film")
     140.0,    // band_sharpness_2
     180.0,    // band_sharpness_3
-    6.0,      // hotspot_focus (slightly broader — more spread)
-    0.78,     // artwork_alpha_peak (much higher than opaque)
-    0.85,     // highlight_white_mix (more bright peaks)
-    0.85      // bleed_alpha (slightly less than opaque — more transparent)
+    6.0,      // hotspot_focus
+    0.60,     // ink_substrate_blend (stronger — no opaque vinyl)
+    0.85,     // highlight_white_mix (brighter peaks)
+    0.82      // substrate_alpha (lower — checker reads through bare areas)
   );
 }
 
 MaterialParams params_eggshell_holografico() {
-  // Warm pastel palette, broad SOFT bands, broad hotspot, low alpha
-  // peak. Reads as a paper-printed foil with diffuse iridescence —
-  // the eggshell substrate is the dominant character; the foil only
-  // adds a subtle warm sheen. The eggshell PNG halo in the bleed
-  // (drawn by the mask layer) carries the cream-paper texture.
+  // Warm pastel palette, broad SOFT bands, broad hotspot. Eggshell paper
+  // is the dominant character — the foil only adds a faint warm sheen,
+  // so ink_substrate_blend is low (artwork stays close to its source
+  // colors) and substrate_alpha is moderate (the cream PNG halo in the
+  // mask layer reads through).
   return MaterialParams(
     1,        // palette_id: warm
-    25.0,     // band_sharpness_1 (much softer/broader — diffuse)
+    25.0,     // band_sharpness_1 (soft/broad)
     35.0,     // band_sharpness_2
     50.0,     // band_sharpness_3
     4.0,      // hotspot_focus (broad)
-    0.38,     // artwork_alpha_peak (subtler — paper foil isn't as bright)
-    0.5,      // highlight_white_mix (less bright — soft pastel sheen)
-    0.55      // bleed_alpha (lower so the eggshell texture halo dominates)
+    0.20,     // ink_substrate_blend (mild — paper foil is subtle)
+    0.5,      // highlight_white_mix (soft pastel sheen)
+    0.55      // substrate_alpha (lower so eggshell texture halo dominates)
   );
 }
 
-// === Luminescent mode ===
+// === Luminescent mode (unified substrate model) ===
 //
-// Glow-in-the-dark vinyl. Now follows the same "laminate over opaque
-// ink" architecture as holographic — artwork preserved, glow only at
-// edges + mouse hotspot. The previous version had a uniform alpha
-// overlay over the whole artwork which washed out the design (the same
-// bug we just fixed for holographic; this is the matching fix here).
+// Glow-in-the-dark vinyl. Same architecture as holographic: the entire
+// cut polygon is ONE material. Printed ink absorbs the glow; bare
+// vinyl glows. Anti-aliased edges fuse into the substrate via ink
+// density, killing the "PNG cutout" matte halo.
 //
-// Visual signal:
-//   - Edge bloom — strong greenish-yellow halo where the cut polygon
-//     boundary diffuses inward (the "phosphorescent rim" of glow
-//     vinyl seen in low light)
-//   - Mouse-anchored brightening — a subtle pulse follows the cursor
-//     so the customer sees the glow react like a real material
-//   - Bleed ring — solid greenish-yellow at high alpha, gentle pulse
-//   - Artwork interior — alpha 0 except at the immediate cut-edge
-//     band, so the gorilla's blacks/colors stay intact
+// Differences from holographic:
+//   - Phosphorescent palette (yellow-green / teal) — no diagonal bands
+//   - Slow autonomous pulse driven by u_time (the material literally
+//     pulses in real life)
+//   - Mouse hotspot only — no specular highlight streaks (glow vinyl
+//     doesn't reflect light, it EMITS it)
+//   - Edge band — luminance leaks INWARD from the cut boundary, a
+//     diagnostic signal that "this material glows"
 vec4 mode_luminescent(float in_cut, float in_artwork) {
-  // Slow autonomous pulse — 0.92..1.00 over a ~3s cycle. The only
-  // mode where time-driven animation is appropriate (it's literally
-  // a phosphorescent material with reactive luminance).
+  // Slow autonomous pulse — 0.92..1.00 over a ~3s cycle.
   float pulse = 0.92 + 0.08 * sin(u_time * 2.1);
 
-  // Phosphorescent palette — bright yellow-green with a teal cool
-  // tone. Same as before; this part was correct.
-  vec3 inner = vec3(0.70, 1.00, 0.40);
-  vec3 outer = vec3(0.50, 0.95, 0.85);
+  // Phosphorescent palette — bright yellow-green with a teal cool tone.
+  vec3 inner_glow = vec3(0.70, 1.00, 0.40);
+  vec3 outer_glow = vec3(0.50, 0.95, 0.85);
 
-  // Mouse-anchored hot spot — broad, soft. Concentrates the "fresh
-  // energy" near the cursor.
+  // Mouse-anchored hot spot — broad, soft.
   vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
-  float hotspot = exp(-distance(v_uv, mouse_pos) * distance(v_uv, mouse_pos) * 5.0);
+  float mouse_dist = distance(v_uv, mouse_pos);
+  float hotspot = exp(-mouse_dist * mouse_dist * 5.0);
 
-  // Edge band — wider than the holographic edge_bloom because the
-  // glow visibly diffuses inward on real glow vinyl. This is what
-  // sells the "this material glows" signal — the gorilla appears to
-  // be CARVED OUT of the glow, with luminance leaking around its edge.
+  // Edge band — luminance leaking inward from the cut boundary.
   float edge_band = smoothstep(0.0, 0.6, in_cut)
                   * (1.0 - smoothstep(0.6, 1.0, in_cut));
 
-  // Color mix — inner toward the artwork, outer toward the bleed
-  // boundary. Adds gentle pulse modulation.
-  float ring_t = smoothstep(0.0, 1.0, in_artwork);
-  vec3 glow_color = mix(outer, inner, ring_t) * pulse;
-  // Macro texture modulation (glow particle grain). No-op when the
-  // luminiscente_macro.png isn't bundled.
-  glow_color = apply_macro_texture(glow_color, u_texture_strength);
+  // Sample the printed ink — same as holographic path.
+  vec4 base_sample = texture2D(u_base_tex, v_uv);
+  vec3 base_rgb = base_sample.rgb;
+  float base_alpha = base_sample.a * u_has_base;
+  float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
+  float ink_density = base_alpha * (1.0 - base_brightness * 0.25);
+  ink_density = clamp(ink_density, 0.0, 1.0);
 
-  // === Bleed area — solid glow halo, full alpha ===
-  vec3 bleed_color = glow_color;
-  float bleed_alpha = 0.85 * (0.85 + hotspot * 0.15);
+  // Substrate — the glow itself. Varies inner/outer based on whether
+  // we're near the cut edge (cooler teal at the boundary; brighter
+  // yellow-green deep inside, like real glow vinyl where the glow
+  // accumulates in the bulk). edge_band is high at the boundary, low
+  // in the bulk — so we mix the other way: inner deep, outer at edge.
+  float boundary_ness = clamp(edge_band, 0.0, 1.0);
+  vec3 substrate = mix(inner_glow, outer_glow, boundary_ness) * pulse;
+  substrate = apply_macro_texture(substrate, u_texture_strength);
 
-  // === Artwork interior — alpha mostly zero, visible only at edge ===
-  // The phosphorescent leak at the artwork's cut-line boundary is what
-  // sells "glow material". Outside that thin band, the artwork shows
-  // through 100% intact.
-  float artwork_glow_alpha = edge_band * 0.55 + hotspot * 0.10;
-  vec3 artwork_color = glow_color * 1.05;
+  // Substrate brightening near the mouse hotspot (the "fresh-charged"
+  // bright region near the cursor).
+  vec3 substrate_color = substrate + vec3(hotspot * 0.20);
+  // Extra bloom at the cut edge — the visible "phosphorescent rim".
+  substrate_color += vec3(edge_band * 0.18);
 
-  float bleed_factor = in_cut * (1.0 - in_artwork);
-  float artwork_factor = in_cut * in_artwork;
-  vec3 rgb = bleed_color * bleed_factor + artwork_color * artwork_factor;
-  float alpha = bleed_alpha * bleed_factor + artwork_glow_alpha * artwork_factor;
+  // Ink response — glow vinyl tints the printed ink slightly with its
+  // own color (a green-tinted version of the customer's pigment is
+  // what you'd see under UV). Low blend factor — mostly the artwork
+  // shows through.
+  vec3 ink_color = mix(base_rgb, base_rgb * substrate * 1.5, 0.15);
+  // Ink near the cut edge picks up a small edge-glow boost — sells the
+  // "the glow leaks past the ink at the silhouette" feel.
+  ink_color += vec3(edge_band * 0.10);
 
-  return vec4(rgb, alpha);
+  vec3 rgb = mix(substrate_color, ink_color, ink_density);
+
+  // Alpha: bleed solid glow; ink mostly transparent so the base canvas
+  // artwork shows through; small boost at edges/hotspot for the visible
+  // glow leak.
+  float alpha = mix(0.85, 0.18, ink_density) + edge_band * 0.20 + hotspot * 0.08;
+  alpha = clamp(alpha, 0.0, 0.95);
+
+  return vec4(rgb, alpha * in_cut);
 }
 
 void main() {
