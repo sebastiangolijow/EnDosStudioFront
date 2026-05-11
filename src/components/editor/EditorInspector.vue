@@ -77,7 +77,7 @@ const SWATCH_CLASSES: Record<Material, string> = {
 <template>
   <aside
     aria-label="Ajustes del recorte"
-    class="flex flex-col gap-5 rounded-lg border border-border bg-surface-1 p-5"
+    class="flex h-full max-h-[calc(100svh-240px)] min-h-0 flex-col gap-5 overflow-y-auto rounded-lg border border-border bg-surface-1 p-5"
   >
     <!-- ===== Forma ===== -->
     <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">

@@ -120,7 +120,18 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
-  scrollBehavior() {
+  scrollBehavior(to) {
+    // Honor hash anchors (e.g. /#how, /#inspiration from the header nav)
+    // so clicking those links smooth-scrolls to the matching section.
+    // The 88 px top offset matches the sticky AppHeader's height — the
+    // section's title would otherwise hide under it.
+    if (to.hash) {
+      return {
+        el: to.hash,
+        top: 88,
+        behavior: 'smooth',
+      }
+    }
     return { top: 0 }
   },
 })

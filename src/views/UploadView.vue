@@ -70,15 +70,19 @@ async function onContinue() {
 </script>
 
 <template>
-  <section class="mx-auto max-w-5xl px-6 py-10">
-    <!-- Stepper -->
+  <section class="px-8 py-10 md:px-12 lg:px-16">
+    <!-- Stepper spans full width -->
     <AppStepper
       :steps="steps"
       :current="1"
       class="mb-10"
     />
 
-    <div class="grid gap-6 md:grid-cols-[1fr_320px]">
+    <!-- Form body centered + constrained: edge-to-edge layout works for
+         dense screens like the home page but a single form with a tips
+         sidebar reads better when it doesn't span 2560 px. max-w-6xl is
+         the same constraint that worked for the Cómo funciona pills. -->
+    <div class="mx-auto grid max-w-6xl gap-12 md:grid-cols-[2fr_1fr]">
       <!-- Left: dropzone OR file preview -->
       <div>
         <UploadDropzone

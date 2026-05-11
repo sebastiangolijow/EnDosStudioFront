@@ -83,7 +83,7 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="mx-auto max-w-6xl px-6 py-12">
+  <section class="px-8 py-12 md:px-12 lg:px-16">
     <RouterLink
       to="/catalogo"
       class="mb-6 inline-block text-sm text-text-muted hover:text-text"

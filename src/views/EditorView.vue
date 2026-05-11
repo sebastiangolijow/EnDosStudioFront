@@ -1106,7 +1106,7 @@ onMounted(bootstrapEditor)
 </script>
 
 <template>
-  <section class="mx-auto max-w-7xl px-6 py-6">
+  <section class="px-8 py-6 md:px-12 lg:px-16">
     <AppStepper
       :steps="steps"
       :current="2"
@@ -1154,10 +1154,16 @@ onMounted(bootstrapEditor)
       {{ openCvError }}
     </div>
 
-    <!-- Editor body -->
+    <!-- Editor body. Toolbar column widened (88 → 120 px) so the icon
+         + label pills don't crowd; gap between columns bumped so the
+         center canvas has visual separation from the rails.
+         Default grid alignment (items-stretch) makes both rails match
+         the tallest column. Center column = canvas + banner sets the
+         height; inspector caps its own height (max-h on its <aside>)
+         so it doesn't drive the row taller than canvas+banner. -->
     <div
       v-if="!isLoading"
-      class="grid gap-4 lg:grid-cols-[88px_1fr_320px]"
+      class="grid gap-8 lg:grid-cols-[120px_1fr_340px]"
     >
       <!-- Left: toolbar -->
       <EditorToolbar
@@ -1184,10 +1190,22 @@ onMounted(bootstrapEditor)
              hidden keeps the scaled canvas clipped to its grid cell so
              it doesn't spill into the side rails. transform-origin
              center means the canvas grows from its visual center —
-             always centered regardless of zoom level. w-full so the
-             wrapper takes the grid cell's full width (matches what the
-             unwrapped CanvasStage previously did). -->
-        <div class="w-full overflow-hidden">
+             always centered regardless of zoom level.
+
+             Size cap: CanvasStage is `aspect-square w-full`, so on a
+             very wide center column the square would balloon past the
+             viewport height and force the customer to scroll. We cap
+             the wrapper to (svh - 320px) — 320 covers the header (88) +
+             stepper (~80) + title row (~50) + status banner below the
+             canvas (~60) + paddings/gaps (~40). The min(...) takes the
+             smaller of "fit the column width" and "fit the viewport
+             height" — square canvas stays bounded by either. mx-auto
+             centers the resulting box if column width > computed
+             height. -->
+        <div
+          class="mx-auto aspect-square w-full overflow-hidden"
+          :style="{ maxWidth: 'min(100%, calc(100svh - 320px))' }"
+        >
           <CanvasStage
             ref="canvasRef"
             :style="{
@@ -1201,7 +1219,7 @@ onMounted(bootstrapEditor)
         <!-- Auto-crop / smart-cut status banner -->
         <div
           v-if="isProcessing || isSmartCutting"
-          class="rounded-md border border-warning/40 bg-warning/10 p-3 text-center text-sm text-warning"
+          class="rounded-md border border-warning/40 bg-warning/10 px-4 py-5 text-center text-base text-warning"
           data-testid="editor-processing"
         >
           {{ isSmartCutting
@@ -1210,27 +1228,27 @@ onMounted(bootstrapEditor)
         </div>
         <div
           v-else-if="noContourMessage"
-          class="rounded-md border border-warning/40 bg-warning/10 p-3 text-center text-sm text-warning"
+          class="rounded-md border border-warning/40 bg-warning/10 px-4 py-5 text-center text-base text-warning"
           data-testid="editor-no-contour"
         >
           {{ noContourMessage }}
         </div>
         <div
           v-else-if="autoCropError"
-          class="rounded-md border border-error/40 bg-error/10 p-3 text-center text-sm text-error"
+          class="rounded-md border border-error/40 bg-error/10 px-4 py-5 text-center text-base text-error"
         >
           {{ autoCropError }}
         </div>
         <div
           v-else-if="shape !== 'contorneado'"
-          class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
+          class="rounded-md border border-border bg-surface-2 px-4 py-5 text-center text-base text-text-muted"
           data-testid="editor-shape-fixed"
         >
           Forma <strong>{{ shape }}</strong> aplicada. Ajustá el margen abajo.
         </div>
         <div
           v-else-if="!openCvReady"
-          class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
+          class="rounded-md border border-border bg-surface-2 px-4 py-5 text-center text-base text-text-muted"
           data-testid="editor-loading-engine"
         >
           Cargando motor de detección…
@@ -1240,7 +1258,7 @@ onMounted(bootstrapEditor)
         </div>
         <div
           v-else
-          class="rounded-md border border-border bg-surface-2 p-3 text-center text-sm text-text-muted"
+          class="rounded-md border border-border bg-surface-2 px-4 py-5 text-center text-base text-text-muted"
           data-testid="editor-ready"
         >
           Tocá <strong>Auto cut</strong> para detectar el contorno.

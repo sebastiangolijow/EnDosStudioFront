@@ -143,7 +143,7 @@ function onToolClick(toolId: Tool['id']) {
 <template>
   <aside
     aria-label="Herramientas del editor"
-    class="flex flex-col gap-2 rounded-lg border border-border bg-surface-1 p-3"
+    class="flex h-full flex-col gap-2 rounded-lg border border-border bg-surface-1 p-3"
   >
     <button
       v-for="tool in tools"

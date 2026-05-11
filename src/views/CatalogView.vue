@@ -31,7 +31,7 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="mx-auto max-w-7xl px-6 py-12">
+  <section class="px-8 py-12 md:px-12 lg:px-16">
     <header class="mb-10 flex flex-wrap items-center justify-between gap-4">
       <h1 class="text-h1 font-bold uppercase tracking-tight text-primary">
         Catálogo

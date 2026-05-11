@@ -213,7 +213,7 @@ onMounted(loadOrder)
 </script>
 
 <template>
-  <section class="mx-auto max-w-7xl px-6 py-10">
+  <section class="px-8 py-10 md:px-12 lg:px-16">
     <AppStepper
       :steps="steps"
       :current="3"

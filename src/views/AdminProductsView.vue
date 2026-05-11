@@ -68,7 +68,7 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="mx-auto max-w-7xl px-6 py-12">
+  <section class="px-8 py-12 md:px-12 lg:px-16">
     <header class="mb-8 flex items-end justify-between gap-6">
       <div>
         <h1 class="text-h1 font-bold uppercase tracking-tight text-primary">
