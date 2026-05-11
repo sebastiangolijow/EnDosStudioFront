@@ -36,6 +36,21 @@ const isLoading = ref<boolean>(true)
 const isSaving = ref<boolean>(false)
 const noContourMessage = ref<string | null>(null)
 
+// Zoom level for the canvas preview — pure CSS scale applied to the
+// canvas-stack wrapper. Cycles 1x → 1.5x → 2x → 1x. Doesn't affect
+// polygon coordinate math (those live in image-natural pixels), the FX
+// shader (its mouse normalization reads getBoundingClientRect which
+// reflects the scaled box correctly), or the OpenCV worker (it runs on
+// the natural-resolution image side-copy). It's a pure visual aid for
+// the customer to inspect cut-line detail.
+const zoomLevel = ref<number>(1)
+const ZOOM_STEPS = [1, 1.5, 2] as const
+function onZoom() {
+  const idx = ZOOM_STEPS.indexOf(zoomLevel.value as typeof ZOOM_STEPS[number])
+  const next = (idx + 1) % ZOOM_STEPS.length
+  zoomLevel.value = ZOOM_STEPS[next]
+}
+
 const canvasRef = ref<InstanceType<typeof CanvasStage> | null>(null)
 
 const cropOptions = ref<AutoCropOptions>({
@@ -481,6 +496,70 @@ async function onAutoCut() {
   }
 }
 
+/**
+ * Reset the editor to the state it was in immediately after the customer's
+ * image first loaded. Triggered by the toolbar's "Borrar" button.
+ *
+ * Restores:
+ *   - the ORIGINAL image (if smart-cut had swapped in a cleaned RGBA)
+ *   - no cut mask (clearMask)
+ *   - default shape (contorneado), material (none), relief off
+ *   - default sliders (margin 15 mm, smoothing 6)
+ *   - Quitar fondo off
+ *   - cut mode + smart-cut state cleared
+ *
+ * Does NOT delete the backend draft order — the customer can just pick
+ * Auto cut / Recorte inteligente again and continue. Saving these reset
+ * values to the order happens via the usual debounced PATCH watch.
+ */
+async function onReset() {
+  if (!canvasRef.value) return
+  // Restore the original image first so subsequent state resets apply
+  // against the right pixels. originalImageSrc is populated on the first
+  // loadImageIntoEditor call (which the bootstrap fires).
+  if (originalImageSrc.value) {
+    try {
+      await canvasRef.value.loadImage(originalImageSrc.value)
+      // Re-decode the side-copy used by OpenCV.
+      const img = new Image()
+      if (
+        !originalImageSrc.value.startsWith('blob:') &&
+        !originalImageSrc.value.startsWith('data:')
+      ) {
+        img.crossOrigin = 'anonymous'
+      }
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error('decode failed'))
+        img.src = originalImageSrc.value as string
+      })
+      loadedImage.value = img
+    } catch {
+      // If reload fails, leave the current canvas state — the rest of the
+      // reset still happens so the customer can recover by re-uploading.
+      toast.error('No pudimos restaurar la imagen original.')
+    }
+  }
+  // Canvas state
+  canvasRef.value.clearMask()
+  canvasRef.value.setRemoveBackground(false)
+  // Editor state
+  shape.value = 'contorneado'
+  material.value = ''
+  withRelief.value = false
+  reliefNote.value = ''
+  removeBackground.value = false
+  cropOptions.value = {
+    ...cropOptions.value,
+    marginMm: 15,
+  }
+  smoothingSlider.value = 6
+  // Cut-pipeline state
+  cutMode.value = null
+  smartCutTightPoints.value = null
+  noContourMessage.value = null
+}
+
 // Keep a copy of the loaded HTMLImageElement so the auto-crop pipeline can
 // access pixel data at natural resolution. Populated alongside loadImage.
 const loadedImage = ref<HTMLImageElement | null>(null)
@@ -866,13 +945,32 @@ onMounted(bootstrapEditor)
         :is-smart-cutting="isSmartCutting"
         :has-original="hasOriginalFile"
         :is-smart-cut-active="cutMode === 'smart'"
+        :zoom-level="zoomLevel"
         @auto-cut="onAutoCut"
         @smart-cut="onSmartCut"
+        @reset="onReset"
+        @zoom="onZoom"
       />
 
       <!-- Center: canvas + status banner -->
       <div class="flex flex-col gap-3">
-        <CanvasStage ref="canvasRef" />
+        <!-- Zoom wrapper: CSS scale around the canvas-stack. Overflow
+             hidden keeps the scaled canvas clipped to its grid cell so
+             it doesn't spill into the side rails. transform-origin
+             center means the canvas grows from its visual center —
+             always centered regardless of zoom level. w-full so the
+             wrapper takes the grid cell's full width (matches what the
+             unwrapped CanvasStage previously did). -->
+        <div class="w-full overflow-hidden">
+          <CanvasStage
+            ref="canvasRef"
+            :style="{
+              transform: `scale(${zoomLevel})`,
+              transformOrigin: 'center center',
+              transition: 'transform 180ms ease-out',
+            }"
+          />
+        </div>
 
         <!-- Auto-crop / smart-cut status banner -->
         <div

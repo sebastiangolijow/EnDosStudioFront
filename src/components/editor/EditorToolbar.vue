@@ -18,17 +18,22 @@ interface Props {
    *  with the classical pipeline, which is rarely what the customer
    *  wants — the visual quality difference is too big to undo by accident). */
   isSmartCutActive?: boolean
+  /** Current zoom level (1, 1.5, 2). Drives the Zoom button's sublabel. */
+  zoomLevel?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSmartCutting: false,
   hasOriginal: false,
   isSmartCutActive: false,
+  zoomLevel: 1,
 })
 
-defineEmits<{
+const emit = defineEmits<{
   'auto-cut': []
   'smart-cut': []
+  'reset': []
+  'zoom': []
 }>()
 
 // Auto cut is meaningful only for `contorneado` — for geometric shapes
@@ -56,19 +61,73 @@ const smartCutDisabled = computed(
 )
 
 /**
- * Tools shown in the toolbar. Per the M2 scope decision (CLAUDE.md "Relief
- * feature scope (M2)"), drawn relief is OUT of MVP — relief is an Inspector
- * checkbox + free-text note instead of a draw-on-canvas tool. The remaining
- * stub buttons preview where future tools will live.
+ * Tools shown in the toolbar. Auto cut + smart cut + Borrar + Zoom are
+ * implemented; Deshacer / Rehacer are stubs (need a real history stack).
+ *
+ * `active` is DERIVED per-render from each tool's disabled state, not a
+ * static flag. Earlier this was hardcoded `active: true` on the cut
+ * buttons, which made Auto cut look orange-highlighted even when it was
+ * disabled (e.g. while smart-cut was active). Now disabled tools always
+ * read as muted; only currently-usable tools get the primary treatment.
  */
-const tools = [
-  { id: 'auto-cut',  icon: '✂️',  label: 'Auto cut',           active: true,  disabled: false },
-  { id: 'smart-cut', icon: '✨',  label: 'Recorte inteligente', active: true,  disabled: false },
-  { id: 'borrar',    icon: '🧽',  label: 'Borrar',              active: false, disabled: true },
-  { id: 'zoom',      icon: '🔍',  label: 'Zoom',                active: false, disabled: true },
-  { id: 'deshacer',  icon: '↶',   label: 'Deshacer',            active: false, disabled: true },
-  { id: 'rehacer',   icon: '↷',   label: 'Rehacer',             active: false, disabled: true },
-]
+interface Tool {
+  id: 'auto-cut' | 'smart-cut' | 'borrar' | 'zoom' | 'deshacer' | 'rehacer'
+  icon: string
+  label: string
+  /** Optional sublabel under the main label (e.g. zoom level indicator). */
+  sublabel?: string
+  /** True when the button is currently clickable. Drives both `disabled`
+   *  on the button and the "active" orange styling — disabled buttons
+   *  never show as active. */
+  enabled: boolean
+}
+
+const tools = computed<Tool[]>(() => [
+  {
+    id: 'auto-cut',
+    icon: '✂️',
+    label: 'Auto cut',
+    enabled: !autoCutDisabled.value,
+  },
+  {
+    id: 'smart-cut',
+    icon: '✨',
+    label: 'Recorte inteligente',
+    enabled: !smartCutDisabled.value,
+  },
+  {
+    id: 'borrar',
+    icon: '🧽',
+    label: 'Borrar',
+    enabled: !props.isProcessing && !props.isSmartCutting,
+  },
+  {
+    id: 'zoom',
+    icon: '🔍',
+    label: 'Zoom',
+    sublabel: `${props.zoomLevel}x`,
+    enabled: true,
+  },
+  {
+    id: 'deshacer',
+    icon: '↶',
+    label: 'Deshacer',
+    enabled: false,
+  },
+  {
+    id: 'rehacer',
+    icon: '↷',
+    label: 'Rehacer',
+    enabled: false,
+  },
+])
+
+function onToolClick(toolId: Tool['id']) {
+  if (toolId === 'auto-cut') return emit('auto-cut')
+  if (toolId === 'smart-cut') return emit('smart-cut')
+  if (toolId === 'borrar') return emit('reset')
+  if (toolId === 'zoom') return emit('zoom')
+}
 </script>
 
 <template>
@@ -82,30 +141,23 @@ const tools = [
       type="button"
       :class="[
         'flex w-full flex-col items-center gap-1 rounded-md border p-3 text-xs transition',
-        tool.active
+        tool.enabled
           ? 'border-primary bg-primary/10 text-primary shadow-orange'
-          : 'border-transparent text-text-muted hover:bg-surface-2 hover:text-text',
-        tool.disabled && 'cursor-not-allowed opacity-30',
+          : 'cursor-not-allowed border-transparent text-text-muted opacity-30',
       ]"
-      :disabled="
-        tool.disabled
-          || (tool.id === 'auto-cut' && autoCutDisabled)
-          || (tool.id === 'smart-cut' && smartCutDisabled)
-      "
+      :disabled="!tool.enabled"
       :data-testid="`tool-${tool.id}`"
-      @click="
-        tool.id === 'auto-cut'
-          ? $emit('auto-cut')
-          : tool.id === 'smart-cut'
-            ? $emit('smart-cut')
-            : null
-      "
+      @click="onToolClick(tool.id)"
     >
       <span
         class="text-xl"
         aria-hidden="true"
       >{{ tool.icon }}</span>
       <span class="text-center leading-tight">{{ tool.label }}</span>
+      <span
+        v-if="tool.sublabel"
+        class="text-[10px] font-medium opacity-70"
+      >{{ tool.sublabel }}</span>
     </button>
   </aside>
 </template>
