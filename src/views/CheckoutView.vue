@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import AppStepper from '@/components/ui/AppStepper.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
+import AppInput from '@/components/ui/AppInput.vue'
+import AppModal from '@/components/ui/AppModal.vue'
 import OrderSummary from '@/components/order/OrderSummary.vue'
 import CatalogOrderSummary from '@/components/catalog/CatalogOrderSummary.vue'
 import ShippingForm from '@/components/order/ShippingForm.vue'
@@ -92,6 +94,25 @@ const SHIPPING_OPTIONS: ShippingMethod[] = ['normal', 'express', 'flash']
  * mount <PaymentElement> here.
  */
 const clientSecret = ref<string | null>(null)
+
+// === Reservation state ===
+// Whitelisted customers see a "Reservar y pagar en tienda" CTA.
+// Picking it opens a modal that collects pickup date+time; submit calls
+// POST /orders/{uuid}/reserve/ which marks the order 'reserved' instead
+// of running through Stripe. Owner takes cash at pickup.
+const reserveModalOpen = ref<boolean>(false)
+const isReserving = ref<boolean>(false)
+// Default: 2 days out at 11:00. Far enough that customers don't accidentally
+// pick a same-day slot; early enough that they don't have to scroll a calendar.
+function defaultPickupDate(): string {
+  const d = new Date()
+  d.setDate(d.getDate() + 2)
+  return d.toISOString().slice(0, 10) // YYYY-MM-DD
+}
+const pickupDate = ref<string>(defaultPickupDate())
+const pickupTime = ref<string>('11:00')
+
+const canReserve = computed<boolean>(() => !!authStore.user?.can_reserve_orders)
 const paymentIntentId = ref<string | null>(null)
 const stripeError = ref<string | null>(null)
 
@@ -334,6 +355,85 @@ async function onPay() {
   }
 }
 
+/**
+ * Reserve flow — alternative to Stripe for whitelisted customers.
+ * Same shipping-fields gating as onPay (we still want a phone in case
+ * the owner needs to coordinate pickup), then PATCH shipping → POST
+ * /reserve/ → redirect to /confirmation. Cash changes hands at pickup.
+ */
+function openReserveModal() {
+  if (!formIsValid.value) {
+    toast.warning('Completá los datos de contacto antes de reservar.')
+    return
+  }
+  reserveModalOpen.value = true
+}
+
+async function onReserve() {
+  if (!orderUuid.value || !formIsValid.value) {
+    toast.warning('Completá todos los campos.')
+    return
+  }
+  if (!pickupDate.value || !pickupTime.value) {
+    toast.warning('Elegí fecha y hora para retirar el pedido.')
+    return
+  }
+  // Combine date + time inputs into an ISO datetime. Treated as local
+  // time on the client — the backend converts to UTC. Construct via
+  // Date() so the customer's tz offset is baked in.
+  const local = new Date(`${pickupDate.value}T${pickupTime.value}`)
+  if (Number.isNaN(local.getTime())) {
+    toast.warning('Fecha u hora inválida.')
+    return
+  }
+  if (local <= new Date()) {
+    toast.warning('Elegí una fecha y hora a futuro.')
+    return
+  }
+
+  isReserving.value = true
+  try {
+    // PATCH shipping first (same as the pay flow) — even for in-store
+    // pickup we want a phone so the owner can call about delays.
+    if (order.value?.status === 'draft') {
+      await ordersService.update(orderUuid.value, {
+        recipient_name: recipientName.value,
+        street_line_1: streetLine1.value,
+        street_line_2: streetLine2.value,
+        city: city.value,
+        postal_code: postalCode.value,
+        country: country.value.toUpperCase(),
+        shipping_phone: shippingPhone.value,
+        shipping_email: shippingEmail.value,
+        shipping_method: shippingMethod.value,
+      })
+    }
+    const reserved = await ordersService.reserve(
+      orderUuid.value,
+      local.toISOString(),
+    )
+    order.value = reserved
+    reserveModalOpen.value = false
+    toast.success('Reservado. Te esperamos en la tienda para el retiro.')
+    router.push({ name: 'confirmation', params: { uuid: reserved.uuid } })
+  } catch (e) {
+    const status = (e as { response?: { status?: number } }).response?.status
+    const detail
+      = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+    if (status === 403) {
+      toast.error('Tu cuenta no tiene habilitada la reserva.')
+    } else if (status === 400) {
+      toast.error(detail ?? 'Datos de reserva inválidos.')
+    } else if (status === 409) {
+      toast.error(detail ?? 'El pedido ya no se puede reservar.')
+    } else {
+      toast.error('No pudimos reservar el pedido. Intentá de nuevo.')
+    }
+  } finally {
+    isReserving.value = false
+  }
+}
+
 function onBack() {
   if (isCatalogOrder.value) {
     // Catalog: back to the product detail (or catalog if no slug nested).
@@ -519,24 +619,40 @@ onMounted(loadOrder)
           >
             ← Volver
           </AppButton>
-          <AppButton
-            v-if="!clientSecret"
-            size="lg"
-            :loading="isProcessing"
-            :disabled="!formIsValid"
-            data-testid="checkout-pay"
-            @click="onPay"
-          >
-            Confirmar y pagar 🔒
-          </AppButton>
-          <AppButton
-            v-else
-            size="lg"
-            data-testid="checkout-go-dashboard"
-            @click="router.push('/dashboard')"
-          >
-            Ir al dashboard
-          </AppButton>
+          <!-- Pay-online and Reserve-for-pickup are mutually exclusive
+               outcomes of this screen. Reserve only renders for users
+               whose can_reserve_orders flag is set (managed by the shop
+               owner in /admin/users). -->
+          <div class="flex flex-wrap items-center gap-2">
+            <AppButton
+              v-if="!clientSecret"
+              size="lg"
+              :loading="isProcessing"
+              :disabled="!formIsValid"
+              data-testid="checkout-pay"
+              @click="onPay"
+            >
+              Confirmar y pagar 🔒
+            </AppButton>
+            <AppButton
+              v-if="!clientSecret && canReserve"
+              variant="ghost"
+              size="lg"
+              :disabled="!formIsValid"
+              data-testid="checkout-reserve"
+              @click="openReserveModal"
+            >
+              Reservar y pagar en tienda
+            </AppButton>
+            <AppButton
+              v-if="clientSecret"
+              size="lg"
+              data-testid="checkout-go-dashboard"
+              @click="router.push('/dashboard')"
+            >
+              Ir al dashboard
+            </AppButton>
+          </div>
         </div>
       </div>
 
@@ -571,5 +687,81 @@ onMounted(loadOrder)
         />
       </div>
     </div>
+
+    <!-- Reserve-for-pickup modal. Opens when a whitelisted customer
+         clicks "Reservar y pagar en tienda". Collects a pickup
+         datetime; submit hits POST /orders/{uuid}/reserve/. -->
+    <AppModal
+      :open="reserveModalOpen"
+      title="Reservar para retirar en tienda"
+      size="md"
+      @close="reserveModalOpen = false"
+    >
+      <div class="flex flex-col gap-4">
+        <p class="text-sm text-text-muted">
+          Tu pedido queda reservado a tu nombre. Lo pagás en efectivo
+          al retirarlo. Elegí cuándo pasás por la tienda.
+        </p>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="flex flex-col gap-1">
+            <label
+              for="reserve-pickup-date"
+              class="text-sm font-medium text-text"
+            >
+              Fecha
+            </label>
+            <input
+              id="reserve-pickup-date"
+              v-model="pickupDate"
+              type="date"
+              required
+              data-testid="reserve-pickup-date"
+              class="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm text-text focus-visible:border-primary focus-visible:outline-none"
+            >
+          </div>
+          <div class="flex flex-col gap-1">
+            <label
+              for="reserve-pickup-time"
+              class="text-sm font-medium text-text"
+            >
+              Hora
+            </label>
+            <input
+              id="reserve-pickup-time"
+              v-model="pickupTime"
+              type="time"
+              required
+              data-testid="reserve-pickup-time"
+              class="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm text-text focus-visible:border-primary focus-visible:outline-none"
+            >
+          </div>
+        </div>
+
+        <p class="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+          💶 Pagás en efectivo al retirar. Si no podés pasar el día
+          elegido, hablanos para reprogramar.
+        </p>
+      </div>
+
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <AppButton
+            variant="ghost"
+            :disabled="isReserving"
+            @click="reserveModalOpen = false"
+          >
+            Cancelar
+          </AppButton>
+          <AppButton
+            :loading="isReserving"
+            data-testid="reserve-submit"
+            @click="onReserve"
+          >
+            Confirmar reserva
+          </AppButton>
+        </div>
+      </template>
+    </AppModal>
   </section>
 </template>

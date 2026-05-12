@@ -37,6 +37,21 @@ const shortId = computed(() => (order.value ? `#${order.value.uuid.slice(0, 8)}`
 
 const isCatalogOrder = computed<boolean>(() => order.value?.kind === 'catalog')
 
+const isReservedOrder = computed<boolean>(() => order.value?.status === 'reserved')
+
+const pickupAtLabel = computed<string>(() => {
+  if (!order.value?.pickup_at) return ''
+  const d = new Date(order.value.pickup_at)
+  return d.toLocaleString('es-ES', {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+})
+
 const sizeLabel = computed(() => {
   if (!order.value || !order.value.width_mm || !order.value.height_mm) return '—'
   return `${order.value.width_mm / 10}×${order.value.height_mm / 10} cm`
@@ -74,14 +89,28 @@ onMounted(loadOrder)
     </div>
 
     <div v-else-if="order">
-      <!-- Hero confirmation -->
+      <!-- Hero — different copy for reserved (in-store pickup) vs.
+           paid-online orders. The Stripe-paid flow has the "we'll
+           email you when production starts" promise; reservations
+           hinge on the customer showing up in person, so we make
+           the pickup datetime the headline. -->
       <div class="text-6xl">
-        🔥
+        {{ isReservedOrder ? '🛒' : '🔥' }}
       </div>
       <h1 class="mt-4 text-h1 font-bold text-text">
-        Pedido recibido
+        {{ isReservedOrder ? 'Pedido reservado' : 'Pedido recibido' }}
       </h1>
-      <p class="mt-2 text-text-muted">
+      <p
+        v-if="isReservedOrder"
+        class="mt-2 text-text-muted"
+      >
+        Reserva <strong class="text-text">{{ shortId }}</strong>. Pasá por
+        la tienda en la fecha elegida y lo pagás en efectivo al retirar.
+      </p>
+      <p
+        v-else
+        class="mt-2 text-text-muted"
+      >
         Pedido <strong class="text-text">{{ shortId }}</strong>. Te avisaremos por email cuando entre en producción.
       </p>
 
@@ -90,6 +119,37 @@ onMounted(loadOrder)
         <span class="text-sm text-text-muted">Estado actual:</span>
         <StatusBadge :status="order.status" />
       </div>
+
+      <!-- Pickup info block — only renders for reserved orders. Mirrors
+           the structure of the shipping email so the customer has the
+           same details to act on whichever channel they read. -->
+      <AppCard
+        v-if="isReservedOrder && pickupAtLabel"
+        class="mx-auto mt-6 max-w-md text-left"
+        data-testid="confirmation-pickup-block"
+      >
+        <h2 class="text-h3 font-semibold text-text">
+          Retiro en tienda
+        </h2>
+        <dl class="mt-3 flex flex-col gap-2 text-sm">
+          <div class="flex items-baseline gap-2">
+            <dt class="text-text-muted">
+              📅 Fecha:
+            </dt>
+            <dd class="font-medium text-text">
+              {{ pickupAtLabel }}
+            </dd>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <dt class="text-text-muted">
+              💶 Pago:
+            </dt>
+            <dd class="font-medium text-text">
+              En efectivo, al retirar
+            </dd>
+          </div>
+        </dl>
+      </AppCard>
 
       <!-- Order summary card (kind-aware) -->
       <AppCard

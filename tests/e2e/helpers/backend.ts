@@ -56,13 +56,19 @@ export interface SeededCustomer {
  * Each call generates a unique email so concurrent tests don't collide.
  */
 export function seedActiveCustomer(
-  options: { email?: string; first_name?: string; last_name?: string } = {},
+  options: {
+    email?: string
+    first_name?: string
+    last_name?: string
+    can_reserve_orders?: boolean
+  } = {},
 ): SeededCustomer {
   const suffix = Math.random().toString(36).slice(2, 10)
   const email = options.email ?? `e2e-${suffix}@example.com`
   const password = 'TestPass123!'
   const firstName = options.first_name ?? 'E2E'
   const lastName = options.last_name ?? 'Test'
+  const canReserve = options.can_reserve_orders ?? false
 
   // Multi-statement Python: create user + matching EmailAddress (without that
   // row, allauth silently rejects login — see backend CLAUDE.md "EmailAddress trap").
@@ -71,7 +77,7 @@ export function seedActiveCustomer(
     'import django; django.setup()',
     'from apps.users.models import User',
     'from allauth.account.models import EmailAddress',
-    `u = User.objects.create_user(email='${email}', password='${password}', role='customer', is_active=True, is_verified=True, first_name='${firstName}', last_name='${lastName}', phone_number='+34 600 000 000')`,
+    `u = User.objects.create_user(email='${email}', password='${password}', role='customer', is_active=True, is_verified=True, first_name='${firstName}', last_name='${lastName}', phone_number='+34 600 000 000', can_reserve_orders=${canReserve ? 'True' : 'False'})`,
     `EmailAddress.objects.create(user=u, email='${email}', verified=True, primary=True)`,
   ].join('; ')
 
@@ -219,9 +225,18 @@ export function seedDraftForCustomer(customer: SeededCustomer): string {
  */
 export function seedOrderForCustomer(
   customer: SeededCustomer,
-  options: { status?: string } = {},
+  options: { status?: string; with_original_file?: boolean } = {},
 ): string {
   const status = options.status ?? 'placed'
+  const withOriginal = options.with_original_file ?? false
+  const fileLines = withOriginal
+    ? [
+        'from django.core.files.base import ContentFile',
+        'from apps.orders.models import OrderFile',
+        "f = ContentFile(b'\\x89PNG fake', name='test.png')",
+        "OrderFile.objects.create(order=o, kind='original', file=f, created_by=u)",
+      ]
+    : []
   const code = [
     "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
     'import django; django.setup()',
@@ -244,6 +259,7 @@ export function seedOrderForCustomer(
       "shipping_phone='+34 600 123 456',",
       ')',
     ].join(' '),
+    ...fileLines,
     'print(o.uuid)',
   ].join('; ')
   return runInBackendShell(code).trim()

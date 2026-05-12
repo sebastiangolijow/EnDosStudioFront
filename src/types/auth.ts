@@ -11,6 +11,10 @@ export interface User {
   role: UserRole
   is_active: boolean
   is_verified: boolean
+  /** Whitelisted-for-cash-pickup flag. Customers with this set true see
+   *  the "Reservar y pagar en tienda" CTA at checkout. Managed per-user
+   *  by the shop owner via /admin/users. */
+  can_reserve_orders: boolean
   created_at: string
 }
 

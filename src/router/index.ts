@@ -117,6 +117,15 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresStaff: true },
   },
 
+  // Reservation whitelist management. Staff toggle can_reserve_orders
+  // per user — gates the "Reservar y pagar en tienda" CTA at checkout.
+  {
+    path: '/admin/users',
+    name: 'admin-users',
+    component: () => import('@/views/AdminUsersView.vue'),
+    meta: { requiresAuth: true, requiresStaff: true },
+  },
+
   // --- Catch-all ---
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

@@ -559,6 +559,29 @@ onMounted(() => {
             </p>
           </section>
 
+          <!-- Pickup block — visible whenever the customer reserved
+               this order. Tells the owner when to expect them and
+               flags the cash-due reminder. -->
+          <section
+            v-if="order.pickup_at"
+            class="rounded-lg border border-primary/40 bg-primary/5 p-5"
+            data-testid="admin-order-pickup-block"
+          >
+            <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-primary">
+              Retiro en tienda
+            </h3>
+            <p class="text-text">
+              📅 {{ formatDateTime(order.pickup_at) }}
+            </p>
+            <p
+              v-if="order.status === 'reserved'"
+              class="mt-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning"
+            >
+              💶 Cobrar en efectivo al retirar. Marcá como "Pagado"
+              cuando recibas el dinero.
+            </p>
+          </section>
+
           <!-- Lifecycle timeline -->
           <section class="rounded-lg border border-border bg-surface-1 p-5">
             <h3 class="mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
@@ -572,6 +595,13 @@ onMounted(() => {
               <li class="flex items-center justify-between gap-2">
                 <span class="text-text-muted">Confirmado</span>
                 <span class="text-text">{{ formatDateTime(order.placed_at) }}</span>
+              </li>
+              <li
+                v-if="order.reserved_at"
+                class="flex items-center justify-between gap-2"
+              >
+                <span class="text-text-muted">Reservado</span>
+                <span class="text-text">{{ formatDateTime(order.reserved_at) }}</span>
               </li>
               <li class="flex items-center justify-between gap-2">
                 <span class="text-text-muted">Pagado</span>

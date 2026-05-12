@@ -78,6 +78,9 @@ const statusCounts = ref<Record<OrderStatus, number>>({
 // might want to follow up on, but never the first thing to triage.
 const STATUS_CARDS: { value: OrderStatus; label: string; emphasize?: boolean }[] = [
   { value: 'paid', label: STATUS_LABELS.paid, emphasize: true },
+  // Reservations sit near the top of the queue — the owner needs to
+  // remember them for cash-on-pickup day.
+  { value: 'reserved', label: STATUS_LABELS.reserved, emphasize: true },
   { value: 'in_production', label: STATUS_LABELS.in_production },
   { value: 'placed', label: STATUS_LABELS.placed },
   { value: 'shipped', label: STATUS_LABELS.shipped },
@@ -131,7 +134,13 @@ async function fetchOrders() {
 async function fetchStatusCounts() {
   const statuses: OrderStatus[] = [
     'draft',
-    'placed', 'paid', 'in_production', 'shipped', 'delivered', 'cancelled',
+    'placed',
+    'reserved',
+    'paid',
+    'in_production',
+    'shipped',
+    'delivered',
+    'cancelled',
   ]
   const results = await Promise.allSettled(
     statuses.map((s) => ordersService.list({ status: s, page_size: 1, page: 1 })),

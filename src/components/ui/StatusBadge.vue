@@ -14,6 +14,9 @@ const props = defineProps<Props>()
  *
  * - draft         → muted: it's not "live" yet
  * - placed        → warning: customer awaiting payment
+ * - reserved      → primary tint: special state (cash-pickup), needs to
+ *                   stand out in the admin board so the owner remembers
+ *                   to take money on the day
  * - paid          → info: paid, waiting for the shop to act
  * - in_production → warning: in motion
  * - shipped       → info: in motion
@@ -23,6 +26,7 @@ const props = defineProps<Props>()
 const variantClasses: Record<OrderStatus, string> = {
   draft: 'bg-surface-2 text-text-muted border-border',
   placed: 'bg-warning/10 text-warning border-warning/40',
+  reserved: 'bg-primary/10 text-primary border-primary/40',
   paid: 'bg-holo-cyan/10 text-holo-cyan border-holo-cyan/40',
   in_production: 'bg-warning/10 text-warning border-warning/40',
   shipped: 'bg-holo-cyan/10 text-holo-cyan border-holo-cyan/40',

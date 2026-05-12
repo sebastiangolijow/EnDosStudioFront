@@ -7,6 +7,7 @@ import type { ProductRef } from './product'
 export type OrderStatus =
   | 'draft'
   | 'placed'
+  | 'reserved'
   | 'paid'
   | 'in_production'
   | 'shipped'
@@ -84,6 +85,7 @@ export const SHIPPING_METHOD_SURCHARGE_LABEL: Record<ShippingMethod, string> = {
 export const STATUS_LABELS: Record<OrderStatus, string> = {
   draft: 'Borrador',
   placed: 'Realizado',
+  reserved: 'Reservado',
   paid: 'Pagado',
   in_production: 'En producción',
   shipped: 'Enviado',
@@ -196,10 +198,14 @@ export interface Order {
   created_at: string
   updated_at: string
   placed_at: string | null
+  reserved_at: string | null
   paid_at: string | null
   shipped_at: string | null
   delivered_at: string | null
   cancelled_at: string | null
+  /** ISO datetime when the customer plans to pick up a reserved order.
+   *  Null for non-reserved orders. */
+  pickup_at: string | null
 }
 
 /**

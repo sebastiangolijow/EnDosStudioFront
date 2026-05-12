@@ -138,6 +138,16 @@ export const ordersService = {
     return response.data
   },
 
+  /** Customer-only, whitelist-gated. Transition draft|placed → reserved.
+   *  `pickupAt` must be an ISO 8601 datetime in the future. The backend
+   *  rejects past datetimes with 400 and missing whitelist with 403. */
+  async reserve(uuid: string, pickupAt: string): Promise<Order> {
+    const response = await api.post(`/orders/${uuid}/reserve/`, {
+      pickup_at: pickupAt,
+    })
+    return response.data
+  },
+
   /** Staff-only. Force any status → any status, bypassing the usual
    *  transition guards. When transitioning to 'shipped' with
    *  shipping_tracking_code set, the backend also sends a notification
