@@ -46,7 +46,24 @@ defineProps<{
         {{ product.description }}
       </p>
       <div class="mt-auto flex items-baseline justify-between pt-2">
-        <span class="text-h3 font-bold text-text">
+        <!-- Price block: strikethrough + sale price when sale_price_eur
+             is set, plain price otherwise. -->
+        <span
+          v-if="product.sale_price_eur"
+          class="flex flex-col leading-tight"
+          data-testid="product-card-sale-price"
+        >
+          <span class="text-xs text-text-muted line-through">
+            €{{ product.price_eur }}
+          </span>
+          <span class="text-h3 font-bold text-primary">
+            €{{ product.sale_price_eur }}
+          </span>
+        </span>
+        <span
+          v-else
+          class="text-h3 font-bold text-text"
+        >
           €{{ product.price_eur }}
         </span>
         <span

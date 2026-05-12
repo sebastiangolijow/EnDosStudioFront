@@ -5,7 +5,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import { productsService } from '@/services/products.service'
 import { useToast } from '@/composables/useToast'
-import type { Product } from '@/types/product'
+import type { CategoryRef, Product } from '@/types/product'
 import type { AsyncStatus } from '@/types/api'
 
 const route = useRoute()
@@ -20,13 +20,24 @@ const name = ref<string>('')
 const description = ref<string>('')
 // Prices are in € on the form, sent as cents on the wire.
 const priceEur = ref<string>('')
+// Optional discount. Empty = no sale. Sent as null on the wire when blank.
+const salePriceEur = ref<string>('')
 const stockQuantity = ref<string>('0')
+// Optional shipping weight. Empty = unknown.
+const weightGrams = ref<string>('')
+// Free-text category name. Backend dedupes by slug. Empty = no category.
+const categoryName = ref<string>('')
 const isActive = ref<boolean>(true)
 const imageFile = ref<File | null>(null)
 const imagePreview = ref<string | null>(null) // either an object URL (new file) or the existing remote URL
 
 const loadStatus = ref<AsyncStatus>('idle')
 const saveStatus = ref<AsyncStatus>('idle')
+
+/** Existing categories — drive the <datalist> for autosuggest. Loaded
+ *  once on mount; admins can still type a new name (the backend
+ *  implicitly creates the row on submit). */
+const knownCategories = ref<CategoryRef[]>([])
 
 const formIsValid = computed<boolean>(() => {
   if (!name.value.trim()) return false
@@ -41,7 +52,10 @@ function hydrate(product: Product) {
   name.value = product.name
   description.value = product.description
   priceEur.value = (product.price_cents / 100).toFixed(2)
+  salePriceEur.value = product.sale_price_eur ?? ''
   stockQuantity.value = String(product.stock_quantity)
+  weightGrams.value = product.weight_grams == null ? '' : String(product.weight_grams)
+  categoryName.value = product.category?.name ?? ''
   isActive.value = product.is_active
   imagePreview.value = product.image // remote URL, may be null
 }
@@ -73,6 +87,25 @@ function onImagePicked(event: Event) {
   }
 }
 
+/** Parse optional cents field. Empty string → null (clears on the wire);
+ *  non-empty → integer cents. NaN / negative is filtered out before submit
+ *  by formIsValid. */
+function parseOptionalCents(eur: string): number | null {
+  const trimmed = eur.trim()
+  if (!trimmed) return null
+  const n = Number(trimmed)
+  if (Number.isNaN(n) || n < 0) return null
+  return Math.round(n * 100)
+}
+
+function parseOptionalInt(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const n = Number(trimmed)
+  if (Number.isNaN(n) || !Number.isInteger(n) || n < 0) return null
+  return n
+}
+
 async function onSave() {
   if (!formIsValid.value) {
     toast.warning('Completá todos los campos antes de guardar.')
@@ -81,6 +114,9 @@ async function onSave() {
   saveStatus.value = 'loading'
   const cents = Math.round(Number(priceEur.value) * 100)
   const stock = Number(stockQuantity.value)
+  const salePriceCents = parseOptionalCents(salePriceEur.value)
+  const weight = parseOptionalInt(weightGrams.value)
+  const category = categoryName.value.trim()
 
   try {
     if (isEditMode.value && slugParam.value) {
@@ -88,7 +124,10 @@ async function onSave() {
         name: name.value.trim(),
         description: description.value.trim(),
         price_cents: cents,
+        sale_price_cents: salePriceCents,
         stock_quantity: stock,
+        weight_grams: weight,
+        category,
         is_active: isActive.value,
         image: imageFile.value ?? undefined, // omit when not picked, so existing image is preserved
       })
@@ -98,7 +137,10 @@ async function onSave() {
         name: name.value.trim(),
         description: description.value.trim(),
         price_cents: cents,
+        sale_price_cents: salePriceCents,
         stock_quantity: stock,
+        weight_grams: weight,
+        category,
         is_active: isActive.value,
         image: imageFile.value,
       })
@@ -112,7 +154,17 @@ async function onSave() {
   }
 }
 
+async function loadCategories() {
+  try {
+    knownCategories.value = await productsService.listCategories()
+  } catch {
+    // Non-blocking — the input still works as free text without the
+    // datalist hints.
+  }
+}
+
 onMounted(() => {
+  loadCategories()
   if (isEditMode.value) loadForEdit()
 })
 </script>
@@ -206,6 +258,17 @@ onMounted(() => {
           data-testid="admin-product-price-eur"
         />
         <AppInput
+          v-model="salePriceEur"
+          label="Precio de oferta (€) — opcional"
+          type="number"
+          placeholder="Vacío = sin oferta"
+          helper="Cuando esté seteado, el cliente verá este precio y el original tachado."
+          data-testid="admin-product-sale-price-eur"
+        />
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <AppInput
           v-model="stockQuantity"
           label="Stock"
           type="number"
@@ -213,16 +276,65 @@ onMounted(() => {
           placeholder="10"
           data-testid="admin-product-stock"
         />
+        <AppInput
+          v-model="weightGrams"
+          label="Peso (gramos) — opcional"
+          type="number"
+          placeholder="40"
+          helper="Para el envío. Dejalo vacío si no aplica."
+          data-testid="admin-product-weight-grams"
+        />
       </div>
 
-      <label class="flex items-center gap-3">
+      <!-- Free-text category with autosuggest. The backend dedupes by
+           slug, so typing an existing name reuses the row; a new name
+           creates one. -->
+      <div class="flex flex-col gap-1">
+        <label
+          for="admin-product-category-input"
+          class="text-sm font-medium text-text"
+        >
+          Categoría — opcional
+        </label>
+        <input
+          id="admin-product-category-input"
+          v-model="categoryName"
+          list="known-categories"
+          type="text"
+          placeholder="Llaveros, Imanes, Pegatinas…"
+          data-testid="admin-product-category"
+          class="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm text-text placeholder:text-text-muted focus-visible:border-primary focus-visible:outline-none"
+        >
+        <datalist id="known-categories">
+          <option
+            v-for="c in knownCategories"
+            :key="c.uuid"
+            :value="c.name"
+          />
+        </datalist>
+        <p class="text-xs text-text-muted">
+          Si escribís una categoría nueva, queda guardada para reusarla.
+        </p>
+      </div>
+
+      <!-- Visibility toggle. Inactive products are hidden from the
+           public catalog but still retrievable by past-order references. -->
+      <label class="flex items-center gap-3 rounded-md border border-border bg-surface-2 px-4 py-3">
         <input
           v-model="isActive"
           type="checkbox"
           class="size-4 accent-primary"
           data-testid="admin-product-active"
         >
-        <span class="text-sm text-text">Visible en el catálogo público</span>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-text">
+            Visible en el catálogo público
+          </p>
+          <p class="text-xs text-text-muted">
+            Destildá para esconder el producto sin borrarlo (los pedidos
+            anteriores siguen funcionando).
+          </p>
+        </div>
       </label>
 
       <div class="flex flex-wrap gap-3 border-t border-border pt-6">

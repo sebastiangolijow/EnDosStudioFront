@@ -88,4 +88,29 @@ test.describe('catalog public browse', () => {
     await page.getByTestId('home-view-catalog').click()
     await expect(page).toHaveURL('/catalogo')
   })
+
+  test('product with sale_price shows strikethrough + discounted price + IVA total', async ({
+    page,
+  }) => {
+    const product = seedProduct({
+      name: 'Llavero Oferta',
+      description: 'Edición rebajada',
+      price_cents: 2000,
+      sale_price_cents: 1200,
+      stock_quantity: 5,
+    })
+
+    // Grid: card shows the sale price block (strikethrough + discounted).
+    await page.goto('/catalogo')
+    const card = page.getByTestId(`product-card-${product.slug}`)
+    await expect(card.getByTestId('product-card-sale-price')).toBeVisible()
+    await expect(card).toContainText('€20.00') // crossed-out original
+    await expect(card).toContainText('€12.00') // discounted
+
+    // Detail: same treatment + cart total uses the discounted price × 1.21.
+    await page.goto(`/catalogo/${product.slug}`)
+    await expect(page.getByTestId('product-sale-price')).toBeVisible()
+    // 1200 × 1 × 1.21 = 1452 → €14.52
+    await expect(page.getByTestId('product-total')).toHaveText('€14.52')
+  })
 })

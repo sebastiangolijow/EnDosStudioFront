@@ -5,6 +5,12 @@
  * precision loss).
  */
 
+export interface CategoryRef {
+  uuid: string
+  name: string
+  slug: string
+}
+
 export interface Product {
   uuid: string
   name: string
@@ -12,6 +18,18 @@ export interface Product {
   description: string
   price_cents: number
   price_eur: string // pre-formatted "15.00"
+  /** Optional discounted price. When non-null the customer pays this
+   *  instead of price_cents; UI shows price_eur with a strikethrough. */
+  sale_price_cents: number | null
+  sale_price_eur: string | null
+  /** Whichever price the customer actually pays — sale if set, else
+   *  regular. Backend-computed so the math stays in one place. */
+  effective_price_cents: number
+  effective_price_eur: string
+  /** Optional. Captured for future weight-based shipping; not surfaced
+   *  in the customer UI today. */
+  weight_grams: number | null
+  category: CategoryRef | null
   stock_quantity: number
   image: string | null // URL on the backend's media server
   is_active: boolean
@@ -31,14 +49,22 @@ export interface ProductRef {
   image: string | null
   price_cents: number
   price_eur: string
+  sale_price_cents: number | null
+  sale_price_eur: string | null
+  effective_price_cents: number
+  effective_price_eur: string
 }
 
-/** Multipart form payload for admin create/update. */
+/** Multipart form payload for admin create/update. `category` is a
+ *  free-text name; the backend creates or reuses a Category row by slug. */
 export interface ProductWritePayload {
   name: string
   description?: string
   price_cents: number
+  sale_price_cents?: number | null
   stock_quantity: number
+  weight_grams?: number | null
+  category?: string
   image?: File | null
   is_active?: boolean
 }

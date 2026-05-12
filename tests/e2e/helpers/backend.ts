@@ -158,15 +158,20 @@ export function seedProduct(opts: {
   stock_quantity: number
   description?: string
   is_active?: boolean
+  sale_price_cents?: number
 }): SeededProduct {
   const name = sanitizeForPythonString(opts.name)
   const description = sanitizeForPythonString(opts.description ?? '')
   const isActive = opts.is_active ?? true
+  const salePart
+    = opts.sale_price_cents !== undefined
+      ? `, sale_price_cents=${opts.sale_price_cents}`
+      : ''
   const code = [
     "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
     'import django; django.setup()',
     'from apps.products.models import Product',
-    `p = Product.objects.create(name='${name}', description='${description}', price_cents=${opts.price_cents}, stock_quantity=${opts.stock_quantity}, is_active=${isActive ? 'True' : 'False'})`,
+    `p = Product.objects.create(name='${name}', description='${description}', price_cents=${opts.price_cents}, stock_quantity=${opts.stock_quantity}, is_active=${isActive ? 'True' : 'False'}${salePart})`,
     'print(f"{p.uuid}|{p.slug}")',
   ].join('; ')
   const out = runInBackendShell(code)

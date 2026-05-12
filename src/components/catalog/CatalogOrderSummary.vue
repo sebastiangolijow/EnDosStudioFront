@@ -26,18 +26,26 @@ defineEmits<{
 
 const lineSubtotalEur = computed(() => {
   if (!props.product) return ''
-  return ((props.product.price_cents * props.productQuantity) / 100).toFixed(2)
+  // effective_price_cents = sale price when set, else regular. Matches
+  // the backend's _compute_catalog_total_cents path so the customer
+  // sees the discounted total here too.
+  return ((props.product.effective_price_cents * props.productQuantity) / 100).toFixed(2)
 })
 
 /** 21% IVA on the pre-IVA line subtotal — Spanish B2C convention. */
 const ivaEur = computed(() => {
   if (!props.product) return ''
-  const ivaCents = Math.round(props.product.price_cents * props.productQuantity * 0.21)
+  const ivaCents = Math.round(
+    props.product.effective_price_cents * props.productQuantity * 0.21,
+  )
   return (ivaCents / 100).toFixed(2)
 })
 
 const productName = computed(() => props.product?.name ?? '—')
 const unitPriceEur = computed(() => props.product?.price_eur ?? '')
+/** When the product is on sale, the customer should see the discounted
+ *  unit price (with the original crossed out) — not the regular price. */
+const unitSalePriceEur = computed(() => props.product?.sale_price_eur ?? null)
 </script>
 
 <template>
@@ -89,7 +97,22 @@ const unitPriceEur = computed(() => props.product?.price_eur ?? '')
         <dt class="uppercase tracking-wide text-text-muted">
           Precio unitario
         </dt>
-        <dd class="font-medium text-text">
+        <!-- Strikethrough original + discounted price when on sale,
+             else plain price. -->
+        <dd
+          v-if="unitSalePriceEur"
+          class="text-right font-medium text-text"
+          data-testid="catalog-summary-sale-price"
+        >
+          <span class="mr-2 text-xs text-text-muted line-through">
+            €{{ unitPriceEur }}
+          </span>
+          <span class="text-primary">€{{ unitSalePriceEur }}</span>
+        </dd>
+        <dd
+          v-else
+          class="font-medium text-text"
+        >
           €{{ unitPriceEur }}
         </dd>
       </div>

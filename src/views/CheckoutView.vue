@@ -121,10 +121,13 @@ const totalEur = computed<string>(() => {
     return order.value.total_eur
   }
   if (order.value.kind === 'catalog' && order.value.product_detail) {
-    // Catalog pre-place: product price IS pre-IVA (matches backend
-    // _compute_catalog_total_cents). All-in = pre-IVA × 1.21.
+    // Catalog pre-place: effective_price_cents = sale price when set,
+    // else regular (matches backend _compute_catalog_total_cents).
+    // All-in = pre-IVA × 1.21.
     const cents = Math.round(
-      order.value.product_detail.price_cents * order.value.product_quantity * 1.21,
+      order.value.product_detail.effective_price_cents
+        * order.value.product_quantity
+        * 1.21,
     )
     return (cents / 100).toFixed(2)
   }
@@ -145,7 +148,8 @@ const subtotalEur = computed<string>(() => {
   if (order.value.subtotal_cents > 0) return order.value.subtotal_eur
   if (quotedSubtotalEur.value) return quotedSubtotalEur.value
   if (order.value.kind === 'catalog' && order.value.product_detail) {
-    const cents = order.value.product_detail.price_cents * order.value.product_quantity
+    const cents
+      = order.value.product_detail.effective_price_cents * order.value.product_quantity
     return (cents / 100).toFixed(2)
   }
   return ''
@@ -156,7 +160,8 @@ const ivaEur = computed<string>(() => {
   if (order.value.iva_cents > 0) return order.value.iva_eur
   if (quotedIvaEur.value) return quotedIvaEur.value
   if (order.value.kind === 'catalog' && order.value.product_detail) {
-    const subCents = order.value.product_detail.price_cents * order.value.product_quantity
+    const subCents
+      = order.value.product_detail.effective_price_cents * order.value.product_quantity
     const ivaCents = Math.round(subCents * 0.21)
     return (ivaCents / 100).toFixed(2)
   }

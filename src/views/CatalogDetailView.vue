@@ -22,14 +22,16 @@ const quantity = ref<number>(1)
 const slug = computed(() => route.params.slug as string)
 
 /**
- * All-in total with 21% IVA. price_cents stored on Product is pre-IVA
- * (matches backend _compute_catalog_total_cents), so the customer-facing
- * "Total" line multiplies by 1.21 to reflect what they'll actually pay
- * — Spanish B2C convention.
+ * All-in total with 21% IVA. effective_price_cents picks sale_price_cents
+ * when set, else price_cents — same logic the backend uses in
+ * _compute_catalog_total_cents. Multiply by 1.21 for the customer-facing
+ * total (Spanish B2C convention).
  */
 const totalEur = computed(() => {
   if (!product.value) return ''
-  const allInCents = Math.round(product.value.price_cents * quantity.value * 1.21)
+  const allInCents = Math.round(
+    product.value.effective_price_cents * quantity.value * 1.21,
+  )
   return (allInCents / 100).toFixed(2)
 })
 
@@ -148,7 +150,24 @@ onMounted(load)
         </p>
 
         <div class="border-y border-border py-6">
-          <p class="text-h2 font-bold text-primary">
+          <!-- Unit price: when sale_price_eur is set, show the original
+               with a strikethrough above the discounted price. -->
+          <div
+            v-if="product.sale_price_eur"
+            class="flex items-baseline gap-3"
+            data-testid="product-sale-price"
+          >
+            <p class="text-h3 font-medium text-text-muted line-through">
+              €{{ product.price_eur }}
+            </p>
+            <p class="text-h2 font-bold text-primary">
+              €{{ product.sale_price_eur }}
+            </p>
+          </div>
+          <p
+            v-else
+            class="text-h2 font-bold text-primary"
+          >
             €{{ product.price_eur }}
           </p>
           <p
