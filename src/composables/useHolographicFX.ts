@@ -576,6 +576,148 @@ MaterialParams params_eggshell_holografico() {
   );
 }
 
+// === Silver / plateado mode ===
+//
+// Same "clear lacquer on opaque ink" architecture as holographic, but
+// the lacquer reflects a NEUTRAL METALLIC sheen instead of a rainbow.
+// Real silver vinyl looks like:
+//   - Mirror-like substrate (mid-to-light gray base, sweep bands push
+//     to bright white where light catches it)
+//   - White printed areas read as bright SILVER (not gray) — the foil
+//     is doing the work; the ink layer is transparent
+//   - Colored printed areas pick up specular sheen on the sweep bands
+//     but keep their hue (you can still tell red from blue)
+//
+// Mental model: brushed aluminum + clear lacquer. Hotspot + 3 sweep
+// bands like holografico, but the "color" at every shimmer position
+// is just a mix between mid-gray (the brushed metal substrate) and
+// white (the specular peaks).
+vec4 mode_silver(float in_cut, float in_artwork) {
+  // Substrate luminance — mid-gray base of brushed metal. We mix
+  // toward white based on the highlight pattern below.
+  vec3 SILVER_BASE   = vec3(0.78, 0.80, 0.83);  // cool-leaning neutral
+  vec3 SILVER_SHADOW = vec3(0.55, 0.57, 0.60);  // deeper gray for low-light areas
+  vec3 SILVER_PEAK   = vec3(1.00, 1.00, 1.02);  // near-pure white at hotspots (slight blue tint cap)
+
+  // Two-octave noise gives the brushed-metal grain — soft directional
+  // mottling that breaks up the uniformity. Lower frequencies than
+  // holographic (don't want strong color zones, just diffuse character).
+  float n1 = noise(v_uv * 4.0) * 0.18;
+  float n2 = noise(v_uv * 18.0) * 0.08;
+  float grain = n1 + n2;
+
+  // Diagonal axis driven by mouse — same axis as holographic so the
+  // hand-feel translates: dragging the cursor sweeps the highlight
+  // across the surface like tilting a real silver sticker under light.
+  float band_axis = v_uv.x * 1.2 - v_uv.y * 0.6 + (u_mouse.x - 0.5) * 0.3;
+
+  // Three sweep bands — narrower and sharper than holographic because
+  // a polished mirror gives crisper specular than a diffraction grating.
+  // Sharpness values higher than foil so the bands snap.
+  float b1 = exp(-pow(fract(band_axis * 1.6 + 0.10) - 0.5, 2.0) * 140.0);
+  float b2 = exp(-pow(fract(band_axis * 2.4 + 0.50) - 0.5, 2.0) * 180.0);
+  float b3 = exp(-pow(fract(band_axis * 4.5 + 0.20) - 0.5, 2.0) * 320.0);
+  float bands = b1 * 0.75 + b2 * 0.55 + b3 * 0.40;
+
+  // Hot spot at the cursor — tight (silver is a sharp specular reflector).
+  vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
+  float mouse_dist = distance(v_uv, mouse_pos);
+  float hotspot = exp(-mouse_dist * mouse_dist * 9.0);
+
+  // Combined highlight scalar — same shape as holographic so the band
+  // sweep concentrates near the cursor. Capped slightly above 1.0 so
+  // peak band centers can punch toward pure white.
+  float highlight = clamp(bands * (0.55 + hotspot * 1.15), 0.0, 1.3);
+
+  // Fine sub-pixel sparkle inside the band streaks — silver foil has
+  // visible micro-grain when light catches it.
+  float sparkle = (hash(v_uv * 380.0 + u_mouse * 5.0) - 0.5) * 0.5;
+  sparkle = sparkle * smoothstep(0.25, 0.85, bands);
+
+  // Cut-edge bloom — soft diffuse glow just inside the boundary.
+  float edge_bloom = smoothstep(0.0, 0.45, in_cut)
+                   * (1.0 - smoothstep(0.45, 1.0, in_cut));
+
+  // Substrate composition — base silver, modulated downward by shadow
+  // areas (grain low) and pushed toward white peaks (highlight high).
+  vec3 substrate = mix(SILVER_SHADOW, SILVER_BASE, smoothstep(0.0, 0.4, grain + 0.3));
+  substrate = mix(substrate, SILVER_PEAK, clamp(highlight * 0.85, 0.0, 1.0));
+  substrate = apply_macro_texture(substrate, u_texture_strength);
+
+  // Sample the printed ink (artwork + smart-cut bleed background).
+  vec4 base_sample = texture2D(u_base_tex, v_uv);
+  vec3 base_rgb = base_sample.rgb;
+  float base_alpha = base_sample.a * u_has_base;
+
+  // === Bleed branches — bare vinyl vs colored backdrop ===
+  //
+  // QF ON  (base_alpha=0): bare substrate is the visible material.
+  //   We paint silver directly with the sweep highlights baked in.
+  //
+  // QF OFF (base_alpha=1): colored backdrop is underneath (e.g. a
+  //   teal smart-cut bleed). We multiply silver × backdrop so the
+  //   teal reads as "teal under chrome" — silver-tinted, with the
+  //   bright sweep bands showing on top.
+
+  vec3 bare_substrate = substrate;
+  bare_substrate += vec3(sparkle * 0.6);  // punch fine sparkle to near-white
+
+  vec3 tinted_substrate = base_rgb * substrate * 1.65;
+  tinted_substrate += vec3(highlight * 0.45);  // additive white on highlight
+  tinted_substrate = mix(base_rgb, tinted_substrate, 0.78);
+
+  vec3 substrate_color = mix(bare_substrate, tinted_substrate, base_alpha);
+  substrate_color += vec3(edge_bloom) * 0.12;
+  substrate_color = clamp(substrate_color, 0.0, 1.0);
+
+  // === Ink density ===
+  //
+  // Inside the tight artwork silhouette: how much pigment is here?
+  // KEY DIFFERENCE from holographic: bright/white ink density is
+  // INVERTED. White pixels (high luminance) should let the silver
+  // substrate dominate — that's what makes "white parts look silver".
+  // Darker pixels block the substrate normally and stay colored.
+  float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
+  // The (1.0 - base_brightness) factor is the magic: pure black ink
+  // has density 1 (fully blocks the silver), pure white ink has
+  // density ~0 (silver shows through fully = white reads as silver).
+  // Mid-tones interpolate smoothly.
+  float ink_density = in_artwork * base_alpha * (1.0 - base_brightness * 0.95);
+  ink_density = clamp(ink_density, 0.0, 1.0);
+
+  // Ink response — colored pixels get specular sheen along the bands,
+  // but no rainbow tilt (silver doesn't iridesce). Additive white-ish
+  // bloom on highlights brightens the ink crests; sparkle pinpoints
+  // add tiny near-white flashes.
+  vec3 ink_color = base_rgb;
+  // Subtle silver tint on the ink — picks up a cool sheen but the hue
+  // dominates. Strength is low so reds stay red, blues stay blue.
+  ink_color = mix(ink_color, ink_color * substrate * 1.5, 0.25);
+  // Additive white highlight on the sweep bands — this is the chrome
+  // sheen you see on a colored area when you tilt it.
+  vec3 ink_bloom = vec3(clamp(highlight * 0.70, 0.0, 1.0));
+  ink_bloom += vec3(clamp(sparkle * 1.2, 0.0, 1.0));
+  ink_color = ink_color + ink_bloom;
+  ink_color = clamp(ink_color, 0.0, 1.0);
+
+  // Composition — silver substrate everywhere, ink replaces it
+  // proportional to density. Note: because density is luminance-
+  // inverted, white ink ≈ substrate (silver), black ink ≈ pure ink.
+  vec3 rgb = mix(substrate_color, ink_color, ink_density);
+
+  // Alpha — high over bleed (we are the visible material), low over
+  // dark ink (just specular contribution), high over white ink (we
+  // ARE the white — push it through to look silver).
+  // The (1.0 - base_brightness) factor on the artwork alpha matches
+  // the density logic so white-ink pixels fully receive the substrate.
+  float bleed_alpha_mix = mix(0.94, 0.55, base_alpha * (1.0 - in_artwork));
+  float ink_alpha = mix(0.92, 0.18, base_brightness);  // bright ink keeps high silver alpha
+  float alpha = mix(bleed_alpha_mix, ink_alpha, in_artwork) + highlight * 0.30;
+  alpha = clamp(alpha, 0.0, 0.97);
+
+  return vec4(rgb, alpha * in_cut);
+}
+
 // === Luminescent mode (unified substrate model) ===
 //
 // Glow-in-the-dark vinyl. Same architecture as holographic: the entire
@@ -714,8 +856,12 @@ void main() {
   //   2 = holografico_transparente (cool foil, stronger over artwork)
   //   3 = luminescent
   //   4 = eggshell_holografico (warm pastel, soft diffuse foil)
+  //   5 = silver / plateado (neutral metallic chrome — white ink
+  //       reads as bright silver, colored ink keeps hue + sheen)
   vec4 col;
-  if (u_mode > 3.5) {
+  if (u_mode > 4.5) {
+    col = mode_silver(in_cut, in_artwork);
+  } else if (u_mode > 3.5) {
     col = mode_holographic_with_params(in_cut, in_artwork, params_eggshell_holografico());
   } else if (u_mode > 2.5) {
     col = mode_luminescent(in_cut, in_artwork);
@@ -1031,9 +1177,18 @@ export function useHolographicFX() {
       | 'holographic_transparent'
       | 'luminescent'
       | 'eggshell_holographic'
+      | 'silver'
       | null,
   ) {
     if (mode === null) {
+      hasTexture = 0
+      textureStrength = 0
+      return
+    }
+    // Silver has no AI macro texture today (procedural-only). Bail
+    // before the MATERIAL_MACRO_URLS lookup so we don't try to load
+    // a URL that doesn't exist.
+    if (mode === 'silver') {
       hasTexture = 0
       textureStrength = 0
       return
@@ -1189,12 +1344,14 @@ export function useHolographicFX() {
       | 'holographic_transparent'
       | 'luminescent'
       | 'eggshell_holographic'
+      | 'silver'
       | null,
   ) {
     if (m === 'holographic') modeValue = 1
     else if (m === 'holographic_transparent') modeValue = 2
     else if (m === 'luminescent') modeValue = 3
     else if (m === 'eggshell_holographic') modeValue = 4
+    else if (m === 'silver') modeValue = 5
     else modeValue = 0
     enabled.value = modeValue > 0
     targetIntensity = modeValue > 0 ? 1 : 0

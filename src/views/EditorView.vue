@@ -930,6 +930,10 @@ watch(smoothingSlider, (v) => {
  *                              (paper-printed feel; halo is eggshell)
  *  - luminiscente             → phosphorescent greenish-yellow glow
  *                              concentrated at the cut edge
+ *  - plateado                 → neutral metallic chrome (silver) — white
+ *                              ink reads as bright silver, colored ink
+ *                              keeps its hue with chrome sheen on the
+ *                              sweep bands
  *  - everything else          → no FX overlay; mask halo + base image
  *                              are sufficient
  */
@@ -940,11 +944,13 @@ function effectModeFor(
   | 'holographic_transparent'
   | 'luminescent'
   | 'eggshell_holographic'
+  | 'silver'
   | null {
   if (m === 'holografico') return 'holographic'
   if (m === 'holografico_transparente') return 'holographic_transparent'
   if (m === 'eggshell_holografico') return 'eggshell_holographic'
   if (m === 'luminiscente') return 'luminescent'
+  if (m === 'plateado') return 'silver'
   return null
 }
 

@@ -149,7 +149,7 @@ test.describe('holographic FX layer', () => {
     })
   })
 
-  test('switching across all 4 FX-mode materials does not crash', async ({
+  test('switching across all 5 FX-mode materials does not crash', async ({
     page,
   }) => {
     // Track 2 wires up an optional macro reference texture per material
@@ -190,6 +190,7 @@ test.describe('holographic FX layer', () => {
       'holografico_transparente',
       'eggshell_holografico',
       'luminiscente',
+      'plateado',
     ]
     for (const m of materials) {
       await page.getByTestId(`inspector-material-${m}`).click()
