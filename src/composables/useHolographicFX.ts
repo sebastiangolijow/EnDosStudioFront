@@ -705,13 +705,19 @@ vec4 mode_silver(float in_cut, float in_artwork) {
   // inverted, white ink ≈ substrate (silver), black ink ≈ pure ink.
   vec3 rgb = mix(substrate_color, ink_color, ink_density);
 
-  // Alpha — high over bleed (we are the visible material), low over
-  // dark ink (just specular contribution), high over white ink (we
-  // ARE the white — push it through to look silver).
-  // The (1.0 - base_brightness) factor on the artwork alpha matches
-  // the density logic so white-ink pixels fully receive the substrate.
+  // Alpha — high over bleed (we are the visible material), high over
+  // bright/white ink (the foil IS the white surface — push the
+  // substrate through so it reads as metallic silver, not white
+  // paint), low over dark ink (let the dark ink sit on top of the
+  // foil with just the specular contribution from the bands).
+  //
+  // The mix endpoints were inverted before: 'mix(0.92, 0.18,
+  // base_brightness)' meant bright pixels got alpha 0.18 → the silver
+  // barely showed, so white-background artwork stayed white instead
+  // of reading as metallic. Now bright = 0.95 (foil dominates),
+  // dark = 0.22 (dark ink dominates, foil only contributes sheen).
   float bleed_alpha_mix = mix(0.94, 0.55, base_alpha * (1.0 - in_artwork));
-  float ink_alpha = mix(0.92, 0.18, base_brightness);  // bright ink keeps high silver alpha
+  float ink_alpha = mix(0.22, 0.95, base_brightness);
   float alpha = mix(bleed_alpha_mix, ink_alpha, in_artwork) + highlight * 0.30;
   alpha = clamp(alpha, 0.0, 0.97);
 
@@ -825,11 +831,15 @@ vec4 mode_gold(float in_cut, float in_artwork) {
   // Composition.
   vec3 rgb = mix(substrate_color, ink_color, ink_density);
 
-  // Alpha — identical curve to silver. High over bleed, low over
-  // dark ink, high over bright ink (push the gold through so white
-  // ink reads as gold).
+  // Alpha — identical curve to silver, with the same inverted-mix
+  // fix. Bright/white ink → high alpha so the gold foil reads
+  // through as metallic gold. Dark ink → low alpha so the ink
+  // dominates with just specular sheen contributed by the bands.
+  // ('Born to shine' reference photo: text reads as solid black
+  // sitting on top of a continuous gold field — that's exactly
+  // this branch when working correctly.)
   float bleed_alpha_mix = mix(0.94, 0.55, base_alpha * (1.0 - in_artwork));
-  float ink_alpha = mix(0.92, 0.18, base_brightness);
+  float ink_alpha = mix(0.22, 0.95, base_brightness);
   float alpha = mix(bleed_alpha_mix, ink_alpha, in_artwork) + highlight * 0.30;
   alpha = clamp(alpha, 0.0, 0.97);
 
