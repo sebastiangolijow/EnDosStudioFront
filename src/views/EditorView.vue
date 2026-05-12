@@ -149,7 +149,15 @@ function geometricMaskPoints(
   marginPx: number,
 ): { kind: 'image'; x: number; y: number }[] | null {
   if (s === 'contorneado') return null
-  const m = Math.max(0, marginPx)
+  // Negative margins are allowed for geometric shapes — the customer
+  // can crop INTO the artwork (e.g. cut off the edge of a logo). The
+  // print shop accepts this because the user explicitly drew the cut
+  // line where they want it. Floor at -half the image dimension to
+  // avoid degenerate (zero-or-negative-size) polygons.
+  const maxInsetX = imgWidth * 0.45  // never collapse below ~10% of the image
+  const maxInsetY = imgHeight * 0.45
+  const maxInset = Math.min(maxInsetX, maxInsetY)
+  const m = Math.max(-maxInset, marginPx)
   const w = imgWidth + 2 * m
   const h = imgHeight + 2 * m
   // The polygon coordinate system is image-natural, but we want the
@@ -207,7 +215,10 @@ function geometricMaskPoints(
 function marginPxForGeometric(): number {
   const mm = cropOptions.value.marginMm ?? 15
   const pm = pxPerMm.value
-  if (!pm || mm <= 0) return 0
+  if (!pm) return 0
+  // Negative margins are intentional for geometric shapes (the
+  // customer wants to crop into the artwork). Keep the sign through
+  // the conversion; geometricMaskPoints handles the bottom clamp.
   return Math.round(mm * pm)
 }
 
@@ -316,6 +327,18 @@ const isSmartCutting = ref<boolean>(false)
 //     what the customer wants).
 // `null` = no cut applied yet.
 const cutMode = ref<'auto' | 'smart' | null>(null)
+
+// True once the customer has committed to a shape:
+//   - geometric shapes (cuadrado/circulo/redondeadas) apply a primitive
+//     polygon immediately on click → mask is active the moment they pick
+//   - contorneado is the default; it stays "uncommitted" until Auto cut
+//     or Smart cut produces a real cut polygon → cutMode flips off null
+// Drives the inspector's shape-button locking — switching shape→shape
+// directly without Borrar in between was producing visible glitches
+// (the new mask painted on top of stale state from the previous shape).
+const hasActiveMask = computed<boolean>(
+  () => shape.value !== 'contorneado' || cutMode.value !== null,
+)
 
 // Tight artwork polygon from the last smart-cut, in image-natural pixels.
 // Saved so the canvas can keep using it as the artwork-clip for halo
@@ -1109,7 +1132,19 @@ async function onSaveDraft() {
 // When the customer switches shape inside the editor, repaint the mask
 // immediately. For geometric shapes that means a new primitive polygon;
 // for contorneado, leave whatever auto-cut mask exists alone.
-watch(shape, () => applyGeometricMaskIfNeeded())
+watch(shape, (newShape) => {
+  // Clamp the margin slider to the new shape's lower bound. Geometric
+  // shapes allow negative margins; contorneado floors at 5 mm. Without
+  // this, switching geometric→contorneado with a negative margin
+  // selected would render below the print-shop floor and the OpenCV
+  // re-run would fail validation.
+  const floor = newShape === 'contorneado' ? 5 : -30
+  const current = cropOptions.value.marginMm ?? 15
+  if (current < floor) {
+    cropOptions.value = { ...cropOptions.value, marginMm: floor }
+  }
+  applyGeometricMaskIfNeeded()
+})
 
 // === Save / Continue ===
 
@@ -1530,6 +1565,7 @@ onMounted(bootstrapEditor)
         :with-relief="withRelief"
         :relief-note="reliefNote"
         :smoothing="smoothingSlider"
+        :has-active-mask="hasActiveMask"
         @update:mask-visible="maskVisible = $event"
         @update:remove-background="onInspectorChange('removeBackground', $event)"
         @update:options="cropOptions = $event"
@@ -1560,6 +1596,7 @@ onMounted(bootstrapEditor)
         :with-relief="withRelief"
         :relief-note="reliefNote"
         :smoothing="smoothingSlider"
+        :has-active-mask="hasActiveMask"
         @update:mask-visible="maskVisible = $event"
         @update:remove-background="onInspectorChange('removeBackground', $event)"
         @update:options="cropOptions = $event"

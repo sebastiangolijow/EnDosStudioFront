@@ -22,9 +22,15 @@ interface Props {
    *  rendered polygon. 0 = follow silhouette tightly; 10 = very wavy,
    *  no detail. v-model:smoothing. Updates instantly (no auto-crop re-run). */
   smoothing: number
+  /** When true, the customer has already committed to a shape (either by
+   *  picking a geometric shape, which applies a mask immediately, or by
+   *  running Auto cut / Smart cut on contorneado). Other shape buttons
+   *  are disabled until they hit Borrar — switching shape→shape directly
+   *  produced visible glitches. */
+  hasActiveMask: boolean
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 defineEmits<{
   'update:maskVisible': [value: boolean]
@@ -38,6 +44,17 @@ defineEmits<{
 }>()
 
 const SHAPES: Shape[] = ['contorneado', 'cuadrado', 'circulo', 'redondeadas']
+
+/** Margin slider bounds. Contorneado floors at 5 mm (real die-cut
+ *  tolerance — below this the artwork would print clipped at the
+ *  edge). Geometric shapes accept NEGATIVE margins so the customer
+ *  can crop into the artwork itself (e.g. cut off the edge of a
+ *  logo) — the cut line is a primitive the customer drew on top of
+ *  the design, no physical print tolerance applies. */
+function marginMinFor(shape: Shape): number {
+  return shape === 'contorneado' ? 5 : -30
+}
+const MARGIN_MAX = 30
 
 /**
  * Materials available for the in-editor compact picker. Same enum the
@@ -88,11 +105,14 @@ const SWATCH_CLASSES: Record<Material, string> = {
         v-for="s in SHAPES"
         :key="s"
         type="button"
+        :disabled="props.hasActiveMask && shape !== s"
         :class="[
           'flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs transition',
           shape === s
             ? 'border-primary bg-primary/10 text-primary'
-            : 'border-border text-text hover:bg-surface-2',
+            : props.hasActiveMask
+              ? 'cursor-not-allowed border-border text-text-muted opacity-50'
+              : 'border-border text-text hover:bg-surface-2',
         ]"
         :data-testid="`inspector-shape-${s}`"
         :aria-pressed="shape === s"
@@ -163,6 +183,13 @@ const SWATCH_CLASSES: Record<Material, string> = {
         <span class="leading-tight">{{ SHAPE_LABELS[s] }}</span>
       </button>
     </div>
+    <p
+      v-if="props.hasActiveMask"
+      class="text-xs text-text-muted"
+      data-testid="inspector-shape-locked-hint"
+    >
+      Tocá <span class="font-semibold text-text">Borrar</span> para cambiar de forma.
+    </p>
 
     <hr class="border-border">
 
@@ -290,13 +317,16 @@ const SWATCH_CLASSES: Record<Material, string> = {
       Margen y forma
     </h2>
 
-    <!-- Bleed margin (mm) — outward offset around the detected silhouette.
-         Floor is 5 mm: below this the die-cutting tolerance alone consumes
-         the margin and the customer's design gets clipped at the edge.
-         The print shop wouldn't accept a 0 mm sticker anyway. 15 mm is the
-         default; some products want more (10–25). The slider re-runs
-         classical Auto cut debounced; for smart-cut it re-calls the
-         backend with the new margin. -->
+    <!-- Bleed margin (mm) — outward offset around the cut line.
+         Range depends on shape:
+           - contorneado: 5 to 30 mm (5 mm floor = die-cut tolerance;
+             below it the artwork prints clipped at the edge)
+           - geometric (cuadrado/circulo/redondeadas): -30 to 30 mm.
+             Negative values crop INTO the artwork — useful when the
+             customer wants to cut off the edge of a logo on purpose.
+         15 mm is the default. The slider re-runs classical Auto cut
+         debounced; for smart-cut it re-calls the backend with the
+         new margin. -->
     <div>
       <div class="mb-1 flex items-baseline justify-between gap-2">
         <label class="text-sm text-text">Margen alrededor</label>
@@ -304,14 +334,20 @@ const SWATCH_CLASSES: Record<Material, string> = {
       </div>
       <input
         type="range"
-        min="5"
-        max="30"
+        :min="marginMinFor(shape)"
+        :max="MARGIN_MAX"
         step="1"
         :value="options.marginMm ?? 15"
         class="w-full accent-primary"
         data-testid="slider-margin-mm"
         @input="$emit('update:options', { ...options, marginMm: Number(($event.target as HTMLInputElement).value) })"
       >
+      <p
+        v-if="shape !== 'contorneado'"
+        class="mt-1 text-xs text-text-muted"
+      >
+        Podés llevar el margen a valores negativos para cortar dentro del diseño.
+      </p>
     </div>
 
     <!-- Cut-line smoothing — perimeter-Gaussian passes on the polygon.
