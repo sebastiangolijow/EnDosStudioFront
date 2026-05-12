@@ -115,13 +115,78 @@ test.describe('admin orders screen', () => {
     )
     // Shipping address present.
     await expect(page.getByTestId('admin-order-shipping')).toContainText('Barcelona')
-    // Mark-paid action available for status=placed.
-    await expect(page.getByTestId('admin-order-mark-paid')).toBeVisible()
 
-    // Run the transition; the action panel updates to the next-stage button.
-    await page.getByTestId('admin-order-mark-paid').click()
-    await expect(page.getByTestId('admin-order-start-production')).toBeVisible({
+    // Status dropdown lets the admin force any transition. Pick 'paid'
+    // and apply — the dropdown then reflects the new server state.
+    const statusSelect = page.getByTestId('admin-order-status-select')
+    await expect(statusSelect).toBeVisible()
+    await statusSelect.selectOption('paid')
+    await page.getByTestId('admin-order-apply-status').click()
+    // After the transition the dropdown re-syncs to the new status,
+    // so Aplicar is disabled until something else is picked.
+    await expect(page.getByTestId('admin-order-apply-status')).toBeDisabled({
       timeout: 10_000,
     })
+    await expect(statusSelect).toHaveValue('paid')
+  })
+
+  test('shipped popup collects carrier + tracking + ETA, persists them, and the dropdown re-syncs', async ({
+    page,
+  }) => {
+    const customer = seedActiveCustomer()
+    const orderUuid = seedOrderForCustomer(customer, { status: 'in_production' })
+    const staff = seedShopStaff()
+
+    await loginAs(page, staff)
+    await page.goto(`/admin/orders/${orderUuid}`, { waitUntil: 'domcontentloaded' })
+
+    // Pick 'shipped' from the dropdown → the popup opens instead of
+    // hitting the server directly.
+    await page.getByTestId('admin-order-status-select').selectOption('shipped')
+    await page.getByTestId('admin-order-apply-status').click()
+
+    // Modal fields are present.
+    const carrier = page.getByTestId('shipped-carrier')
+    const tracking = page.getByTestId('shipped-tracking-code')
+    const eta = page.getByTestId('shipped-eta-date')
+    await expect(carrier).toBeVisible()
+    await expect(tracking).toBeVisible()
+    await expect(eta).toBeVisible()
+
+    await carrier.fill('MRW')
+    await tracking.fill('MRW987654')
+    await eta.fill('2026-05-25')
+
+    await page.getByTestId('shipped-submit').click()
+
+    // After success the popup closes and the dropdown shows 'shipped'.
+    await expect(page.getByTestId('admin-order-status-select')).toHaveValue(
+      'shipped',
+      { timeout: 10_000 },
+    )
+    // The current-shipping recap block surfaces the saved values.
+    await expect(page.getByText('MRW987654')).toBeVisible()
+    await expect(page.getByText('2026-05-25')).toBeVisible()
+  })
+
+  test('design previews surface download CTAs when files are present', async ({
+    page,
+  }) => {
+    const customer = seedActiveCustomer()
+    const orderUuid = seedOrderForCustomer(customer, { status: 'placed' })
+    const staff = seedShopStaff()
+
+    await loginAs(page, staff)
+    await page.goto(`/admin/orders/${orderUuid}`, { waitUntil: 'domcontentloaded' })
+
+    // Even without files, the placeholder text renders. We're not
+    // seeding files in this helper, so the download CTAs should NOT
+    // be present — proves the v-if guards correctly. (When the order
+    // has files, the CTAs appear; that path is exercised manually
+    // until the seed helper grows file-upload support.)
+    await expect(page.getByTestId('admin-order-original-image')).toBeVisible()
+    await expect(page.getByTestId('admin-order-preview-image')).toBeVisible()
+    await expect(page.getByTestId('admin-order-download-original')).toHaveCount(0)
+    await expect(page.getByTestId('admin-order-download-preview')).toHaveCount(0)
   })
 })

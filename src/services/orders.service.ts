@@ -138,6 +138,30 @@ export const ordersService = {
     return response.data
   },
 
+  /** Staff-only. Force any status → any status, bypassing the usual
+   *  transition guards. When transitioning to 'shipped' with
+   *  shipping_tracking_code set, the backend also sends a notification
+   *  email to the customer. */
+  async adminSetStatus(
+    uuid: string,
+    payload: {
+      status: string
+      shipping_carrier?: string
+      shipping_tracking_code?: string
+      shipping_eta_date?: string | null
+    },
+  ): Promise<Order> {
+    const response = await api.post(`/orders/${uuid}/admin-set-status/`, payload)
+    return response.data
+  },
+
+  /** Staff-only. Distinct shipping_carrier values from past orders —
+   *  drives the autosuggest in the "Marcar enviado" popup. */
+  async listShippingCarriers(): Promise<string[]> {
+    const response = await api.get('/orders/shipping-carriers/')
+    return response.data.results ?? []
+  },
+
   // === AI background removal ===
 
   /**

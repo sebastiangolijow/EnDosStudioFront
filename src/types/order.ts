@@ -163,6 +163,11 @@ export interface Order {
   shipping_phone: string
   shipping_email: string
   shipping_method: ShippingMethod
+  /** Filled by the admin from the "Marcar enviado" popup. Empty when
+   *  the order hasn't reached shipped yet. */
+  shipping_carrier: string
+  shipping_tracking_code: string
+  shipping_eta_date: string | null
 
   // Customer (read-only, populated by the backend serializer for the
   // admin orders screen). Empty strings when created_by is null

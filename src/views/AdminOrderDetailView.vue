@@ -29,10 +29,18 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DashboardShell from '@/components/layout/DashboardShell.vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import AppInput from '@/components/ui/AppInput.vue'
+import AppModal from '@/components/ui/AppModal.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ordersService } from '@/services/orders.service'
 import { useToast } from '@/composables/useToast'
-import { type Order, MATERIAL_LABELS, SHAPE_LABELS } from '@/types/order'
+import {
+  type Order,
+  type OrderStatus,
+  MATERIAL_LABELS,
+  SHAPE_LABELS,
+  STATUS_LABELS,
+} from '@/types/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -47,6 +55,7 @@ async function loadOrder() {
   isLoading.value = true
   try {
     order.value = await ordersService.retrieve(orderUuid.value)
+    syncSelectedStatus()
   } catch {
     toast.error('No pudimos cargar el pedido.')
     router.push({ name: 'admin-orders' })
@@ -54,8 +63,6 @@ async function loadOrder() {
     isLoading.value = false
   }
 }
-
-onMounted(loadOrder)
 
 // === Computed display ===
 
@@ -120,55 +127,129 @@ const shippingAddress = computed(() => {
   return lines.length > 0 ? lines : null
 })
 
-// === Status transitions ===
+// === Status override (admin-set-status) ===
 //
-// Same pattern as the list view's quickActionFor — but here the
-// buttons live in the right-rail action panel and we don't refresh a
-// count card. After a successful transition we re-fetch the full
-// order so files (cut_path SVG appears after mark-paid) and
-// timestamps update.
+// The shop owner picks a status from the dropdown and clicks
+// "Aplicar". Bypasses the usual transition guards — used for manual
+// corrections (re-opening a cancelled order, retroactively marking
+// delivered, etc.). When the target is 'shipped' we open a popup
+// first to capture carrier / tracking / ETA; the backend sends the
+// customer a notification email at that point.
 
-async function transition(
-  action: 'markPaid' | 'startProduction' | 'ship' | 'cancel',
-) {
+const STATUSES: OrderStatus[] = [
+  'draft',
+  'placed',
+  'paid',
+  'in_production',
+  'shipped',
+  'delivered',
+  'cancelled',
+]
+
+// `selectedStatus` is the dropdown's working value (may differ from
+// `order.status` while the admin is choosing). Synced from the loaded
+// order so the dropdown defaults to the current status.
+const selectedStatus = ref<OrderStatus>('draft')
+
+// Shipped popup state.
+const shippedModalOpen = ref<boolean>(false)
+const shippingCarrier = ref<string>('')
+const shippingTrackingCode = ref<string>('')
+const shippingEtaDate = ref<string>('') // ISO date (YYYY-MM-DD) from <input type="date">
+const knownCarriers = ref<string[]>([])
+
+async function loadCarriers() {
+  try {
+    knownCarriers.value = await ordersService.listShippingCarriers()
+  } catch {
+    // Non-blocking — the input still accepts free text without suggestions.
+  }
+}
+
+async function applyStatusChange() {
   if (!order.value || isTransitioning.value) return
+  if (selectedStatus.value === order.value.status) {
+    toast.info('El pedido ya está en ese estado.')
+    return
+  }
+  // Shipped is the one transition that needs extra metadata. Open the
+  // popup; the actual server call happens from submitShippedPopup.
+  if (selectedStatus.value === 'shipped') {
+    // Pre-fill from any prior values so the admin can correct a typo
+    // without re-typing the carrier.
+    shippingCarrier.value = order.value.shipping_carrier ?? ''
+    shippingTrackingCode.value = order.value.shipping_tracking_code ?? ''
+    shippingEtaDate.value = order.value.shipping_eta_date ?? ''
+    shippedModalOpen.value = true
+    return
+  }
+  await postStatusChange({ status: selectedStatus.value })
+}
+
+async function postStatusChange(payload: {
+  status: OrderStatus
+  shipping_carrier?: string
+  shipping_tracking_code?: string
+  shipping_eta_date?: string | null
+}) {
+  if (!order.value) return
   isTransitioning.value = true
   try {
-    let updated: Order
-    if (action === 'markPaid') updated = await ordersService.markPaid(order.value.uuid)
-    else if (action === 'startProduction') updated = await ordersService.startProduction(order.value.uuid)
-    else if (action === 'ship') updated = await ordersService.ship(order.value.uuid)
-    else updated = await ordersService.cancel(order.value.uuid)
+    const updated = await ordersService.adminSetStatus(order.value.uuid, payload)
     order.value = updated
-    const messages: Record<typeof action, string> = {
-      markPaid: 'Pedido marcado como pagado.',
-      startProduction: 'Pedido en producción.',
-      ship: 'Pedido marcado como enviado.',
-      cancel: 'Pedido cancelado.',
+    selectedStatus.value = updated.status
+    if (payload.status === 'shipped' && payload.shipping_tracking_code) {
+      toast.success('Pedido marcado enviado. Email enviado al cliente.')
+    } else {
+      toast.success('Estado actualizado.')
     }
-    toast.success(messages[action])
-    // Re-fetch in case server-side side effects (cut_path file generation
-    // on mark-paid) didn't make it into the response.
-    if (action === 'markPaid') await loadOrder()
+    // Re-fetch in case server-side side effects didn't make it into
+    // the response (cut_path SVG appears on the paid transition).
+    if (payload.status === 'paid') await loadOrder()
   } catch (e) {
-    const detail =
-      (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-    toast.error(detail ?? 'No pudimos completar la acción.')
+    const detail
+      = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    toast.error(detail ?? 'No pudimos actualizar el estado.')
   } finally {
     isTransitioning.value = false
   }
+}
+
+async function submitShippedPopup() {
+  if (!shippingCarrier.value.trim() || !shippingTrackingCode.value.trim()) {
+    toast.warning('Completá transportista y código de seguimiento.')
+    return
+  }
+  await postStatusChange({
+    status: 'shipped',
+    shipping_carrier: shippingCarrier.value.trim(),
+    shipping_tracking_code: shippingTrackingCode.value.trim(),
+    shipping_eta_date: shippingEtaDate.value || null,
+  })
+  shippedModalOpen.value = false
+}
+
+function cancelShippedPopup() {
+  shippedModalOpen.value = false
+  // Restore the dropdown to the actual status so the admin doesn't see
+  // a misleading "shipped" pending state after dismissing the popup.
+  if (order.value) selectedStatus.value = order.value.status
 }
 
 function shortId(uuid: string): string {
   return `#${uuid.slice(0, 8)}`
 }
 
-const canMarkPaid = computed(() => order.value?.status === 'placed')
-const canStartProduction = computed(() => order.value?.status === 'paid')
-const canShip = computed(() => order.value?.status === 'in_production')
-const canCancel = computed(
-  () => order.value?.status === 'draft' || order.value?.status === 'placed',
-)
+// Re-sync selectedStatus whenever the order loads/changes — keeps the
+// dropdown in lockstep with the server's view.
+function syncSelectedStatus() {
+  if (order.value) selectedStatus.value = order.value.status
+}
+
+onMounted(() => {
+  loadOrder()
+  loadCarriers()
+})
 </script>
 
 <template>
@@ -235,6 +316,21 @@ const canCancel = computed(
                     Sin imagen original
                   </div>
                 </div>
+                <!-- Download CTA — direct link to the backend's media URL.
+                     `download` attribute hints the browser to save instead
+                     of navigate; the filename ultimately depends on the
+                     server's Content-Disposition header. -->
+                <a
+                  v-if="originalFile?.file"
+                  :href="originalFile.file"
+                  :download="`pedido-${shortId(order.uuid).replace('#', '')}-original`"
+                  target="_blank"
+                  rel="noopener"
+                  class="mt-2 block w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-center text-xs font-semibold text-text transition hover:border-primary hover:text-primary"
+                  data-testid="admin-order-download-original"
+                >
+                  ⬇ Descargar original
+                </a>
               </div>
               <!-- Preview composite (post-C2 feature). Falls back to
                    die_cut_mask thumbnail when not yet uploaded. -->
@@ -265,6 +361,19 @@ const canCancel = computed(
                     Sin previsualización
                   </div>
                 </div>
+                <!-- Download CTA prefers the composite (what the customer
+                     designed); falls back to the raw die_cut_mask. -->
+                <a
+                  v-if="previewCompositeFile?.file || dieCutMaskFile?.file"
+                  :href="(previewCompositeFile?.file ?? dieCutMaskFile?.file) || '#'"
+                  :download="`pedido-${shortId(order.uuid).replace('#', '')}-${previewCompositeFile ? 'composicion' : 'corte'}`"
+                  target="_blank"
+                  rel="noopener"
+                  class="mt-2 block w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-center text-xs font-semibold text-text transition hover:border-primary hover:text-primary"
+                  data-testid="admin-order-download-preview"
+                >
+                  ⬇ Descargar {{ previewCompositeFile ? 'composición' : 'línea de corte' }}
+                </a>
               </div>
             </div>
             <!-- Production-ready cut SVG download -->
@@ -486,52 +595,163 @@ const canCancel = computed(
             </ul>
           </section>
 
-          <!-- Status transitions (only when applicable) -->
-          <section
-            v-if="canMarkPaid || canStartProduction || canShip || canCancel"
-            class="rounded-lg border border-border bg-surface-1 p-5"
-          >
+          <!-- Status override — admin can force any status. Picking
+               'shipped' opens a popup to collect carrier + tracking +
+               ETA; submitting that triggers the customer email. -->
+          <section class="rounded-lg border border-border bg-surface-1 p-5">
             <h3 class="mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
               Acciones
             </h3>
-            <div class="flex flex-col gap-2">
-              <AppButton
-                v-if="canMarkPaid"
-                :loading="isTransitioning"
-                data-testid="admin-order-mark-paid"
-                @click="transition('markPaid')"
+            <div class="flex flex-col gap-3">
+              <label
+                for="admin-order-status-select"
+                class="text-xs text-text-muted"
               >
-                Marcar como pagado
-              </AppButton>
-              <AppButton
-                v-if="canStartProduction"
-                :loading="isTransitioning"
-                data-testid="admin-order-start-production"
-                @click="transition('startProduction')"
+                Cambiar estado
+              </label>
+              <select
+                id="admin-order-status-select"
+                v-model="selectedStatus"
+                data-testid="admin-order-status-select"
+                class="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm text-text focus-visible:border-primary focus-visible:outline-none"
               >
-                Iniciar producción
-              </AppButton>
+                <option
+                  v-for="s in STATUSES"
+                  :key="s"
+                  :value="s"
+                >
+                  {{ STATUS_LABELS[s] }}
+                </option>
+              </select>
               <AppButton
-                v-if="canShip"
                 :loading="isTransitioning"
-                data-testid="admin-order-ship"
-                @click="transition('ship')"
+                :disabled="selectedStatus === order.status"
+                data-testid="admin-order-apply-status"
+                @click="applyStatusChange"
               >
-                Marcar enviado
+                Aplicar
               </AppButton>
-              <AppButton
-                v-if="canCancel"
-                variant="ghost"
-                :loading="isTransitioning"
-                data-testid="admin-order-cancel"
-                @click="transition('cancel')"
+              <!-- Helper text spells out what 'shipped' triggers so the
+                   admin isn't surprised by the email going out. -->
+              <p
+                v-if="selectedStatus === 'shipped' && order.status !== 'shipped'"
+                class="text-xs text-text-muted"
               >
-                Cancelar pedido
-              </AppButton>
+                Al confirmar te vamos a pedir transportista, código de seguimiento
+                y fecha estimada. El cliente recibe un email automático.
+              </p>
+              <!-- Show current shipping info when the order is already
+                   shipped — lets the admin verify what was sent. -->
+              <div
+                v-if="order.shipping_tracking_code"
+                class="mt-2 rounded-md border border-border bg-surface-2 p-3 text-xs text-text"
+              >
+                <p class="mb-1 text-text-muted">
+                  Envío actual:
+                </p>
+                <p>📦 {{ order.shipping_carrier || '—' }}</p>
+                <p class="font-mono">
+                  🔖 {{ order.shipping_tracking_code }}
+                </p>
+                <p v-if="order.shipping_eta_date">
+                  📅 {{ order.shipping_eta_date }}
+                </p>
+              </div>
             </div>
           </section>
         </aside>
       </div>
     </div>
+
+    <!-- Shipped popup — opens when admin picks 'shipped' from the
+         dropdown. Collects carrier (with datalist autosuggest fed from
+         past orders), tracking code, and ETA date. Submit triggers
+         POST /orders/{uuid}/admin-set-status/ which sends the
+         customer email server-side. -->
+    <AppModal
+      :open="shippedModalOpen"
+      title="Marcar como enviado"
+      size="md"
+      @close="cancelShippedPopup"
+    >
+      <div class="flex flex-col gap-4">
+        <p class="text-sm text-text-muted">
+          Completá los datos del envío. El cliente recibirá un email automático
+          con el seguimiento.
+        </p>
+
+        <div class="flex flex-col gap-1">
+          <label
+            for="shipped-carrier"
+            class="text-sm font-medium text-text"
+          >
+            Transportista
+          </label>
+          <input
+            id="shipped-carrier"
+            v-model="shippingCarrier"
+            list="admin-known-carriers"
+            type="text"
+            placeholder="MRW, Correos, SEUR…"
+            required
+            data-testid="shipped-carrier"
+            class="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm text-text placeholder:text-text-muted focus-visible:border-primary focus-visible:outline-none"
+          >
+          <datalist id="admin-known-carriers">
+            <option
+              v-for="c in knownCarriers"
+              :key="c"
+              :value="c"
+            />
+          </datalist>
+        </div>
+
+        <AppInput
+          v-model="shippingTrackingCode"
+          label="Código de seguimiento"
+          placeholder="Ej. MRW123456789"
+          required
+          data-testid="shipped-tracking-code"
+        />
+
+        <div class="flex flex-col gap-1">
+          <label
+            for="shipped-eta"
+            class="text-sm font-medium text-text"
+          >
+            Fecha estimada de entrega
+          </label>
+          <input
+            id="shipped-eta"
+            v-model="shippingEtaDate"
+            type="date"
+            data-testid="shipped-eta-date"
+            class="rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm text-text focus-visible:border-primary focus-visible:outline-none"
+          >
+          <p class="text-xs text-text-muted">
+            Opcional. Se muestra al cliente en el email.
+          </p>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <AppButton
+            variant="ghost"
+            type="button"
+            @click="cancelShippedPopup"
+          >
+            Cancelar
+          </AppButton>
+          <AppButton
+            :loading="isTransitioning"
+            data-testid="shipped-submit"
+            @click="submitShippedPopup"
+          >
+            Confirmar y enviar email
+          </AppButton>
+        </div>
+      </template>
+    </AppModal>
   </DashboardShell>
 </template>
