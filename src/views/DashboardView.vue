@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import DashboardShell from '@/components/layout/DashboardShell.vue'
 import OrderHistoryCard from '@/components/order/OrderHistoryCard.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -8,11 +7,12 @@ import AppCard from '@/components/ui/AppCard.vue'
 import { ordersService } from '@/services/orders.service'
 import { useOrderStore } from '@/stores/order.store'
 import { useToast } from '@/composables/useToast'
+import { useNewSticker } from '@/composables/useNewSticker'
 import { type Order, type OrderStatus, STATUS_LABELS } from '@/types/order'
 
-const router = useRouter()
 const orderStore = useOrderStore()
 const toast = useToast()
+const { startNewSticker } = useNewSticker()
 
 type FilterValue = 'all' | OrderStatus
 
@@ -70,7 +70,7 @@ async function fetchOrders() {
 }
 
 function startNewOrder() {
-  router.push('/upload')
+  startNewSticker()
 }
 
 onMounted(fetchOrders)

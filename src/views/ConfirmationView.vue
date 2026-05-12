@@ -6,11 +6,13 @@ import AppCard from '@/components/ui/AppCard.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ordersService } from '@/services/orders.service'
 import { useToast } from '@/composables/useToast'
+import { useNewSticker } from '@/composables/useNewSticker'
 import { type Order, MATERIAL_LABELS } from '@/types/order'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const { startNewSticker } = useNewSticker()
 
 const orderUuid = computed(() => route.params.uuid as string | undefined)
 const order = ref<Order | null>(null)
@@ -137,7 +139,7 @@ onMounted(loadOrder)
         </AppButton>
         <AppButton
           v-else
-          @click="router.push('/upload')"
+          @click="startNewSticker"
         >
           Crear otro pedido
         </AppButton>

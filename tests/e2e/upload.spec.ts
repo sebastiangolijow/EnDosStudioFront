@@ -1,8 +1,16 @@
 /**
- * Upload spec — does the upload screen actually create a draft order on the
- * backend, attach the original file, and route to the editor?
+ * Upload-flow spec — the home → editor → drop-file → canvas pipeline.
  *
- * REQUIRES the Django backend running (`make up` in the backend repo).
+ * UploadView used to be a dedicated screen between the home page and
+ * the editor. After feedback from the 2026-05-11 client demo, it was
+ * collapsed into the editor's empty state: the customer clicks
+ * "Subir mi diseño" on home → a draft is created → editor opens with
+ * an UploadDropzone where the canvas would be → file dropped uploads
+ * + transitions to canvas.
+ *
+ * This spec covers that flow end-to-end. /upload itself is now a
+ * redirect stub for backwards compat (external bookmarks); test that
+ * separately.
  */
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +24,6 @@ import {
   type SeededCustomer,
 } from './helpers/backend'
 
-/** Programmatic login — same pattern as dashboard.spec. */
 async function loginAs(page: Page, customer: SeededCustomer): Promise<string> {
   const loginRes = await page.request.post('http://localhost:8000/api/v1/auth/login/', {
     data: { email: customer.email, password: customer.password },
@@ -44,7 +51,7 @@ async function loginAs(page: Page, customer: SeededCustomer): Promise<string> {
 
 const FIXTURE = path.join(__dirname, 'fixtures/sample-design.png')
 
-test.describe('upload', () => {
+test.describe('upload flow (home → editor empty state)', () => {
   test.describe.configure({ mode: 'serial' })
 
   test.beforeAll(() => {
@@ -60,42 +67,36 @@ test.describe('upload', () => {
     await page.route('**/opencv.js', (route) => route.abort())
   })
 
-  test('full flow: pick file → preview → continue → editor', async ({ page }) => {
+  test('home → click Subir mi diseño → editor empty state → drop file → canvas mounts', async ({
+    page,
+  }) => {
     const customer = seedActiveCustomer()
     const accessToken = await loginAs(page, customer)
 
-    await page.goto('/upload')
-
-    // Stepper: step 1 active
-    await expect(page.getByText('Subir diseño')).toBeVisible()
-
-    // Dropzone visible, no preview yet
-    await expect(page.getByTestId('upload-dropzone')).toBeVisible()
-    await expect(page.getByTestId('file-preview')).not.toBeVisible()
-
-    // Continuar disabled before a file is selected
-    const continueBtn = page.getByRole('button', { name: /Continuar/ })
-    await expect(continueBtn).toBeDisabled()
-
-    // Select the fixture via the hidden <input type=file>
-    await page.getByTestId('upload-input').setInputFiles(FIXTURE)
-
-    // Preview now visible, dropzone gone
-    await expect(page.getByTestId('file-preview')).toBeVisible()
-    await expect(page.getByText('sample-design.png')).toBeVisible()
-    await expect(page.getByText('200 × 200 px')).toBeVisible()
-
-    // Continuar now enabled
-    await expect(continueBtn).toBeEnabled()
-    await continueBtn.click()
-
-    // Should land on /editor/{uuid} (step 2 of the flow)
+    // Customer lands on home, clicks the hero CTA. A draft is created
+    // and they're routed straight into the editor (no intermediate
+    // upload screen).
+    await page.goto('/')
+    await page.getByTestId('home-view-new-sticker').click()
     await expect(page).toHaveURL(/\/editor\/[0-9a-f-]{36}$/, { timeout: 10_000 })
 
-    // Verify the backend has the draft + file attached
+    // Editor renders the empty-state dropzone, NOT the canvas, because
+    // the draft has no `original` file yet.
+    await expect(page.getByTestId('editor-empty-state')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('upload-dropzone')).toBeVisible()
+
+    // Drop the file via the hidden <input type=file>.
+    await page.getByTestId('upload-input').setInputFiles(FIXTURE)
+
+    // The empty state disappears, replaced by the canvas stack.
+    await expect(page.getByTestId('editor-empty-state')).toHaveCount(0, {
+      timeout: 10_000,
+    })
+    await expect(page.getByTestId('editor-fx-canvas')).toBeVisible({ timeout: 10_000 })
+
+    // Verify the backend has the file attached to the draft.
     const url = page.url()
     const orderUuid = url.match(/\/editor\/([0-9a-f-]{36})$/)![1]
-
     const orderRes = await page.request.get(
       `http://localhost:8000/api/v1/orders/${orderUuid}/`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -104,26 +105,20 @@ test.describe('upload', () => {
     const order = await orderRes.json()
     expect(order.uuid).toBe(orderUuid)
     expect(order.status).toBe('draft')
-    expect(order.files).toHaveLength(1)
-    expect(order.files[0].kind).toBe('original')
-    expect(order.files[0].size_bytes).toBeGreaterThan(0)
-    expect(order.files[0].mime_type).toContain('image')
+    const original = order.files.find((f: { kind: string }) => f.kind === 'original')
+    expect(original).toBeDefined()
+    expect(original.size_bytes).toBeGreaterThan(0)
+    expect(original.mime_type).toContain('image')
   })
 
-  test('remove button restores the dropzone', async ({ page }) => {
+  test('legacy /upload route still works as a redirect → editor', async ({ page }) => {
     const customer = seedActiveCustomer()
     await loginAs(page, customer)
+
     await page.goto('/upload')
-
-    await page.getByTestId('upload-input').setInputFiles(FIXTURE)
-    await expect(page.getByTestId('file-preview')).toBeVisible()
-
-    await page.getByTestId('file-preview-remove').click()
-
-    // Back to dropzone, no preview, button disabled
-    await expect(page.getByTestId('upload-dropzone')).toBeVisible()
-    await expect(page.getByTestId('file-preview')).not.toBeVisible()
-    await expect(page.getByRole('button', { name: /Continuar/ })).toBeDisabled()
+    // UploadView's onMounted creates a draft and pushes to /editor/{uuid}.
+    await expect(page).toHaveURL(/\/editor\/[0-9a-f-]{36}$/, { timeout: 10_000 })
+    await expect(page.getByTestId('editor-empty-state')).toBeVisible({ timeout: 10_000 })
   })
 
   test('redirects to login when unauthenticated', async ({ page }) => {

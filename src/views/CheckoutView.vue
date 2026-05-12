@@ -15,13 +15,12 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 
-// Stepper differs by kind. Catalog orders skip upload/editor/order-config —
+// Stepper differs by kind. Catalog orders skip the editor + order-config —
 // they go straight from /catalogo/:slug to /checkout/:uuid.
 const STICKER_STEPS = [
-  { number: 1, label: 'Subir diseño' },
-  { number: 2, label: 'Editar' },
-  { number: 3, label: 'Material y tamaño' },
-  { number: 4, label: 'Resumen' },
+  { number: 1, label: 'Diseñar' },
+  { number: 2, label: 'Material y tamaño' },
+  { number: 3, label: 'Resumen' },
 ]
 const CATALOG_STEPS = [
   { number: 1, label: 'Catálogo' },
@@ -50,7 +49,8 @@ const quotedTotalEur = ref<string>('')
 
 const isCatalogOrder = computed<boolean>(() => order.value?.kind === 'catalog')
 const stepper = computed(() => (isCatalogOrder.value ? CATALOG_STEPS : STICKER_STEPS))
-const stepperCurrent = computed(() => (isCatalogOrder.value ? 2 : 4))
+// Sticker stepper has 3 steps now (was 4); Resumen is step 3.
+const stepperCurrent = computed(() => (isCatalogOrder.value ? 2 : 3))
 
 // === Shipping form state ===
 const recipientName = ref<string>('')

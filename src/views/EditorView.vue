@@ -7,6 +7,7 @@ import AppBottomSheet from '@/components/ui/AppBottomSheet.vue'
 import CanvasStage from '@/components/editor/CanvasStage.vue'
 import EditorToolbar from '@/components/editor/EditorToolbar.vue'
 import EditorInspector from '@/components/editor/EditorInspector.vue'
+import UploadDropzone from '@/components/upload/UploadDropzone.vue'
 import { ordersService } from '@/services/orders.service'
 import { filesService } from '@/services/files.service'
 import {
@@ -22,11 +23,13 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 
+// Customer flow is now 3 steps (was 4) — the editor handles both
+// upload and design in one screen. Step labels and numbers cascade
+// through OrderConfigView (step 2) and CheckoutView (step 3).
 const steps = [
-  { number: 1, label: 'Subir diseño' },
-  { number: 2, label: 'Editar' },
-  { number: 3, label: 'Material y tamaño' },
-  { number: 4, label: 'Resumen' },
+  { number: 1, label: 'Diseñar' },
+  { number: 2, label: 'Material y tamaño' },
+  { number: 3, label: 'Resumen' },
 ]
 
 const orderUuid = computed(() => route.params.uuid as string)
@@ -1064,9 +1067,25 @@ async function onSaveDraft() {
           await filesService.delete(orderUuid.value, existing.uuid)
         }
         await filesService.upload(orderUuid.value, 'die_cut_mask', blob)
-        // Refresh order.files so subsequent saves find the new file.
-        order.value = await ordersService.retrieve(orderUuid.value)
       }
+      // 3. Snapshot the editor's composite view too (same as onContinue).
+      //    Non-blocking on failure — the draft still saves without the preview.
+      try {
+        const composite = await canvasRef.value.getCompositeAsBlob()
+        if (composite) {
+          const prevPreview = order.value.files.find(
+            (f) => f.kind === 'preview_composite',
+          )
+          if (prevPreview) {
+            await filesService.delete(orderUuid.value, prevPreview.uuid)
+          }
+          await filesService.upload(orderUuid.value, 'preview_composite', composite)
+        }
+      } catch {
+        // Best-effort; ignore.
+      }
+      // Refresh order.files so subsequent saves find the new files.
+      order.value = await ordersService.retrieve(orderUuid.value)
     }
     toast.success('Borrador guardado.')
   } catch {
@@ -1109,6 +1128,27 @@ async function onContinue() {
     }
     await filesService.upload(orderUuid.value, 'die_cut_mask', blob)
 
+    // Also snapshot the editor's composite view (artwork + halo + FX as
+    // the customer sees it) so the admin detail view can show their
+    // exact final design. Failure here is non-fatal — the order
+    // continues, the admin just falls back to original + die_cut_mask
+    // separately.
+    try {
+      const composite = await canvasRef.value.getCompositeAsBlob()
+      if (composite) {
+        const prevPreview = order.value.files.find(
+          (f) => f.kind === 'preview_composite',
+        )
+        if (prevPreview) {
+          await filesService.delete(orderUuid.value, prevPreview.uuid)
+        }
+        await filesService.upload(orderUuid.value, 'preview_composite', composite)
+      }
+    } catch {
+      // Best-effort. Don't block Continuar; the order is still valid
+      // without the preview.
+    }
+
     router.push({ name: 'order-config', params: { uuid: orderUuid.value } })
   } catch {
     toast.error('No pudimos guardar la línea de corte. Intentá de nuevo.')
@@ -1118,7 +1158,10 @@ async function onContinue() {
 }
 
 function onBack() {
-  router.push('/upload')
+  // Editor is now step 1 — "back" goes to the dashboard rather than
+  // a separate upload page. Customer's in-progress draft persists
+  // (autosave) so they can come back via Borradores filter.
+  router.push('/dashboard')
 }
 
 // Patch loadOrder to use loadImageIntoEditor instead of canvasRef.loadImage.
@@ -1130,12 +1173,6 @@ async function bootstrapEditor() {
 
     if (order.value.status !== 'draft') {
       router.push({ name: 'order-config', params: { uuid: orderUuid.value } })
-      return
-    }
-    const original = order.value.files.find((f) => f.kind === 'original')
-    if (!original) {
-      toast.error('No hay imagen para editar. Volvé a subir tu diseño.')
-      router.push('/upload')
       return
     }
 
@@ -1165,6 +1202,15 @@ async function bootstrapEditor() {
     withRelief.value = order.value.with_relief
     reliefNote.value = order.value.relief_note
     shape.value = order.value.shape
+
+    // If the order has no `original` image yet, leave the editor in
+    // empty-state mode — the template renders an UploadDropzone in
+    // place of the CanvasStage. The customer drops their image,
+    // onOriginalFileSelected uploads it and runs the canvas-load tail
+    // below. Inspector stays usable so they can pre-pick a material.
+    const original = order.value.files.find((f) => f.kind === 'original')
+    if (!original) return
+
     // Push the initial palette into the canvas so a returning customer with
     // a material already chosen sees the right halo color on Auto cut.
     canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
@@ -1195,6 +1241,58 @@ async function bootstrapEditor() {
   }
 }
 
+/**
+ * Handler for the empty-state UploadDropzone (rendered when the order
+ * has no `original` file yet). Uploads the file, refetches the order
+ * to pick up the new file, then runs the canvas-load tail of
+ * bootstrapEditor so the editor transitions from empty state to
+ * normal editing.
+ *
+ * Errors don't navigate away — the dropzone stays visible so the
+ * customer can retry without losing their place.
+ */
+async function onOriginalFileSelected(file: File) {
+  if (!order.value) return
+  isSaving.value = true
+  try {
+    await filesService.upload(orderUuid.value, 'original', file)
+    // Refetch so order.files reflects the upload. hasOriginalFile flips
+    // true → template swaps the empty-state for the CanvasStage. Wait
+    // a tick so the canvas component mounts before we push state into it.
+    order.value = await ordersService.retrieve(orderUuid.value)
+    const original = order.value.files.find((f) => f.kind === 'original')
+    if (!original) {
+      throw new Error('Upload succeeded but original file missing from order.')
+    }
+    await nextTick()
+    // Mirror the canvas-load tail of bootstrapEditor (kept inline here
+    // rather than extracted because the bootstrap path runs material
+    // hydration BEFORE the file fetch — see lastSavedSnapshot above).
+    canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
+    canvasRef.value?.setTransparentMaterial(material.value === 'vinilo_transparente')
+    canvasRef.value?.setMaterialActive(
+      material.value !== '' && material.value !== 'vinilo_transparente',
+    )
+    canvasRef.value?.setHolographicMaterial(
+      material.value === 'holografico' ||
+        material.value === 'holografico_transparente',
+    )
+    canvasRef.value?.setEffectMode(effectModeFor(material.value))
+    canvasRef.value?.setRemoveBackground(removeBackground.value)
+    const localUrl = await fetchAsObjectUrl(original)
+    await loadImageIntoEditor(localUrl)
+    applyGeometricMaskIfNeeded()
+  } catch (e) {
+    console.error('[editor] original-file upload failed:', e)
+    const detail =
+      (e as { response?: { data?: { detail?: string } } }).response?.data?.detail ??
+      'No pudimos subir tu archivo. Probá de nuevo.'
+    toast.error(detail)
+  } finally {
+    isSaving.value = false
+  }
+}
+
 onMounted(bootstrapEditor)
 </script>
 
@@ -1202,7 +1300,7 @@ onMounted(bootstrapEditor)
   <section class="px-8 py-6 md:px-12 lg:px-16">
     <AppStepper
       :steps="steps"
-      :current="2"
+      :current="1"
       class="mb-6"
     />
 
@@ -1287,8 +1385,30 @@ onMounted(bootstrapEditor)
         @redo="onRedo"
       />
 
-      <!-- Center: canvas + status banner + mobile Ajustes trigger -->
+      <!-- Center: canvas + status banner + mobile Ajustes trigger.
+           When the order has no `original` file yet, render the
+           UploadDropzone in place of the canvas. The customer drops
+           their image, onOriginalFileSelected uploads it and the
+           bootstrap tail loads the canvas — at which point the dropzone
+           disappears and the canvas takes over. Inspector + toolbar
+           stay mounted across the transition so any material/shape
+           pre-selection is preserved. -->
       <div class="flex flex-col gap-3">
+        <!-- Empty state: no original yet → upload dropzone full-square. -->
+        <div
+          v-if="!hasOriginalFile"
+          class="mx-auto aspect-square w-full"
+          :style="{
+            maxWidth: isDesktop
+              ? 'min(100%, calc(100svh - 320px))'
+              : 'min(100%, calc(100svh - 400px))',
+          }"
+          data-testid="editor-empty-state"
+        >
+          <UploadDropzone @file-selected="onOriginalFileSelected" />
+        </div>
+
+        <!-- Canvas state: original loaded → the 4-layer stack renders. -->
         <!-- Zoom wrapper: CSS scale around the canvas-stack. Overflow
              hidden keeps the scaled canvas clipped to its grid cell so
              it doesn't spill into the side rails. transform-origin
@@ -1306,6 +1426,7 @@ onMounted(bootstrapEditor)
              centers the resulting box if column width > computed
              height. -->
         <div
+          v-else
           class="mx-auto aspect-square w-full overflow-hidden"
           :style="{
             maxWidth: isDesktop

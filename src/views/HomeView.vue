@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
+import { useNewSticker } from '@/composables/useNewSticker'
 import heroSticker from '@/assets/examples/hero-sticker-2.png'
 import inspirate1 from '@/assets/inspirate/inspirate-1.png'
 import inspirate2 from '@/assets/inspirate/inspirate-2.png'
@@ -13,6 +14,7 @@ import inspirate7 from '@/assets/inspirate/inspirate-7.png'
 import inspirate8 from '@/assets/inspirate/inspirate-8.png'
 
 const router = useRouter()
+const { startNewSticker } = useNewSticker()
 
 // "Cómo funciona" feature pills under the hero. Mirror the mockup copy
 // verbatim. "Recorte inteligente" (was "Recorte automático con IA") —
@@ -137,7 +139,8 @@ const visibleInspiration = computed(() =>
         <div class="mt-10 flex flex-wrap items-center gap-4">
           <AppButton
             size="lg"
-            @click="router.push('/upload')"
+            data-testid="home-view-new-sticker"
+            @click="startNewSticker"
           >
             Subir mi diseño
           </AppButton>

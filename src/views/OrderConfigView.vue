@@ -26,10 +26,9 @@ const orderStore = useOrderStore()
 const toast = useToast()
 
 const steps = [
-  { number: 1, label: 'Subir diseño' },
-  { number: 2, label: 'Editar' },
-  { number: 3, label: 'Material y tamaño' },
-  { number: 4, label: 'Resumen' },
+  { number: 1, label: 'Diseñar' },
+  { number: 2, label: 'Material y tamaño' },
+  { number: 3, label: 'Resumen' },
 ]
 
 const orderUuid = computed(() => route.params.uuid as string | undefined)
@@ -70,8 +69,8 @@ const ALL_MATERIALS = Object.keys(MATERIAL_LABELS) as Material[]
 
 async function loadOrder() {
   if (!orderUuid.value) {
-    toast.error('Pedido no encontrado. Volvé a empezar desde "Subir diseño".')
-    router.push('/upload')
+    toast.error('Pedido no encontrado. Volvé al dashboard para empezar otro.')
+    router.push('/dashboard')
     return
   }
   try {
@@ -199,7 +198,7 @@ function onBack() {
   if (orderUuid.value) {
     router.push({ name: 'editor', params: { uuid: orderUuid.value } })
   } else {
-    router.push('/upload')
+    router.push('/dashboard')
   }
 }
 
@@ -216,7 +215,7 @@ onMounted(loadOrder)
   <section class="px-8 py-10 md:px-12 lg:px-16">
     <AppStepper
       :steps="steps"
-      :current="3"
+      :current="2"
       class="mb-6 md:mb-10"
     />
 
