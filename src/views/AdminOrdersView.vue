@@ -9,7 +9,8 @@
  *   - Edge cases: manual mark-as-paid for bank-transfer / cash orders.
  *
  * Layout:
- *   - Status count cards (top): 6 cards, one per non-draft status.
+ *   - Status count cards (top): 7 cards, one per status (Borradores
+ *     included so the owner can see in-progress customer carts).
  *     Highlights Paid (action queue). Clicking a card filters the list below.
  *   - Filter + search bar: status pills, search input, date range, page size.
  *   - Order table: customer name + email, item summary, total, status,
@@ -73,6 +74,8 @@ const statusCounts = ref<Record<OrderStatus, number>>({
 
 // Status counts shown in the cards row. Order matches workflow priority:
 // paid first (the action queue), then production, then "done" states.
+// 'draft' lives at the end — useful to spot abandoned carts the owner
+// might want to follow up on, but never the first thing to triage.
 const STATUS_CARDS: { value: OrderStatus; label: string; emphasize?: boolean }[] = [
   { value: 'paid', label: STATUS_LABELS.paid, emphasize: true },
   { value: 'in_production', label: STATUS_LABELS.in_production },
@@ -80,6 +83,7 @@ const STATUS_CARDS: { value: OrderStatus; label: string; emphasize?: boolean }[]
   { value: 'shipped', label: STATUS_LABELS.shipped },
   { value: 'delivered', label: STATUS_LABELS.delivered },
   { value: 'cancelled', label: STATUS_LABELS.cancelled },
+  { value: 'draft', label: STATUS_LABELS.draft },
 ]
 
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
@@ -126,6 +130,7 @@ async function fetchOrders() {
  */
 async function fetchStatusCounts() {
   const statuses: OrderStatus[] = [
+    'draft',
     'placed', 'paid', 'in_production', 'shipped', 'delivered', 'cancelled',
   ]
   const results = await Promise.allSettled(
