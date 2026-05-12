@@ -211,6 +211,7 @@ defineExpose({
       | 'luminescent'
       | 'eggshell_holographic'
       | 'silver'
+      | 'gold'
       | null,
   ) => setEffectMode(mode),
   setSmoothingSlider: (value: number) => setSmoothingSlider(value),

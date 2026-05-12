@@ -934,6 +934,9 @@ watch(smoothingSlider, (v) => {
  *                              ink reads as bright silver, colored ink
  *                              keeps its hue with chrome sheen on the
  *                              sweep bands
+ *  - dorado                   → warm metallic gold — white ink reads as
+ *                              bright gold, colored ink keeps its hue
+ *                              with warm sheen on the sweep bands
  *  - everything else          → no FX overlay; mask halo + base image
  *                              are sufficient
  */
@@ -945,12 +948,14 @@ function effectModeFor(
   | 'luminescent'
   | 'eggshell_holographic'
   | 'silver'
+  | 'gold'
   | null {
   if (m === 'holografico') return 'holographic'
   if (m === 'holografico_transparente') return 'holographic_transparent'
   if (m === 'eggshell_holografico') return 'eggshell_holographic'
   if (m === 'luminiscente') return 'luminescent'
   if (m === 'plateado') return 'silver'
+  if (m === 'dorado') return 'gold'
   return null
 }
 

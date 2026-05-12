@@ -138,6 +138,7 @@ export function useCanvasEditor() {
     | 'luminescent'
     | 'eggshell_holographic'
     | 'silver'
+    | 'gold'
     | null
   >(null)
   /** UI smoothing slider value (2–10). Drives perimeter-Gaussian passes
@@ -545,6 +546,7 @@ export function useCanvasEditor() {
       | 'luminescent'
       | 'eggshell_holographic'
       | 'silver'
+      | 'gold'
       | null,
   ): void {
     effectMode.value = mode

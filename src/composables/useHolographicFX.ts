@@ -718,6 +718,121 @@ vec4 mode_silver(float in_cut, float in_artwork) {
   return vec4(rgb, alpha * in_cut);
 }
 
+// === Gold / dorado mode ===
+//
+// Same architecture as silver, just shifted to a warm gold palette.
+// White ink reads as bright gold (not the cool silver of plateado);
+// colored ink keeps its hue with warm specular sheen on the bands.
+//
+// Palette choice: leans amber rather than pure yellow so the result
+// reads as "polished brass / gold leaf" rather than "highlighter
+// yellow plastic". The peak color isn't pure white (that would
+// neutralize the warmth at hotspots) — it's a pale warm cream that
+// keeps the metallic character even at maximum specular.
+vec4 mode_gold(float in_cut, float in_artwork) {
+  // Three-stop warm metal ramp. SHADOW is a deep amber so unlit
+  // regions read as polished metal under low light, not flat brown.
+  vec3 GOLD_BASE   = vec3(0.93, 0.78, 0.36);  // warm gold midtone
+  vec3 GOLD_SHADOW = vec3(0.62, 0.45, 0.18);  // deep amber in lows
+  vec3 GOLD_PEAK   = vec3(1.00, 0.93, 0.70);  // pale warm cream at hotspots
+
+  // Brushed-metal grain — identical params to silver. The mottling
+  // pattern is material-neutral; what makes "gold" is the palette.
+  float n1 = noise(v_uv * 4.0) * 0.18;
+  float n2 = noise(v_uv * 18.0) * 0.08;
+  float grain = n1 + n2;
+
+  // Sweep axis driven by mouse — matches silver/holographic for
+  // consistent hand-feel across materials.
+  float band_axis = v_uv.x * 1.2 - v_uv.y * 0.6 + (u_mouse.x - 0.5) * 0.3;
+
+  // Three sweep bands — gold has a slightly broader specular profile
+  // than silver in real life (gold's refractive index gives softer
+  // edge falloff than aluminum), so sharpness values are pulled down
+  // a notch (120/160/280 vs silver's 140/180/320).
+  float b1 = exp(-pow(fract(band_axis * 1.6 + 0.10) - 0.5, 2.0) * 120.0);
+  float b2 = exp(-pow(fract(band_axis * 2.4 + 0.50) - 0.5, 2.0) * 160.0);
+  float b3 = exp(-pow(fract(band_axis * 4.5 + 0.20) - 0.5, 2.0) * 280.0);
+  float bands = b1 * 0.75 + b2 * 0.55 + b3 * 0.40;
+
+  // Hot spot at the cursor — slightly softer than silver (focus 7
+  // vs 9) because gold reflects with a broader specular lobe.
+  vec2 mouse_pos = vec2(u_mouse.x, u_mouse.y);
+  float mouse_dist = distance(v_uv, mouse_pos);
+  float hotspot = exp(-mouse_dist * mouse_dist * 7.0);
+
+  // Combined highlight scalar.
+  float highlight = clamp(bands * (0.55 + hotspot * 1.15), 0.0, 1.3);
+
+  // Fine sub-pixel sparkle inside the band streaks. Same hash seed
+  // pattern as silver — the sparkle character is geometric, not
+  // material-tinted (the color comes from substrate, sparkle is
+  // luminance modulation on top).
+  float sparkle = (hash(v_uv * 380.0 + u_mouse * 5.0) - 0.5) * 0.5;
+  sparkle = sparkle * smoothstep(0.25, 0.85, bands);
+
+  // Cut-edge bloom — soft diffuse glow just inside the boundary.
+  float edge_bloom = smoothstep(0.0, 0.45, in_cut)
+                   * (1.0 - smoothstep(0.45, 1.0, in_cut));
+
+  // Substrate composition — base gold, modulated down by grain in
+  // shadows, up to pale cream at hotspot peaks.
+  vec3 substrate = mix(GOLD_SHADOW, GOLD_BASE, smoothstep(0.0, 0.4, grain + 0.3));
+  substrate = mix(substrate, GOLD_PEAK, clamp(highlight * 0.85, 0.0, 1.0));
+  substrate = apply_macro_texture(substrate, u_texture_strength);
+
+  // Sample the printed ink (artwork + smart-cut bleed background).
+  vec4 base_sample = texture2D(u_base_tex, v_uv);
+  vec3 base_rgb = base_sample.rgb;
+  float base_alpha = base_sample.a * u_has_base;
+
+  // === Bleed branches — same shape as silver ===
+  vec3 bare_substrate = substrate;
+  bare_substrate += vec3(sparkle * 0.6) * GOLD_PEAK;  // sparkle tinted slightly warm
+
+  vec3 tinted_substrate = base_rgb * substrate * 1.65;
+  tinted_substrate += GOLD_PEAK * highlight * 0.45;  // additive warm-cream on highlights
+  tinted_substrate = mix(base_rgb, tinted_substrate, 0.78);
+
+  vec3 substrate_color = mix(bare_substrate, tinted_substrate, base_alpha);
+  substrate_color += vec3(edge_bloom) * 0.12;
+  substrate_color = clamp(substrate_color, 0.0, 1.0);
+
+  // === Ink density — luminance-inverted ===
+  //
+  // Same magic as silver: white ink → density 0 → substrate dominates
+  // → white reads as bright gold. Dark ink → density 1 → keeps its
+  // hue. Mid-tones interpolate.
+  float base_brightness = dot(base_rgb, vec3(0.299, 0.587, 0.114));
+  float ink_density = in_artwork * base_alpha * (1.0 - base_brightness * 0.95);
+  ink_density = clamp(ink_density, 0.0, 1.0);
+
+  // Ink response — colored pixels get warm gold sheen along the
+  // bands but keep their hue. Sub-stamp tint is slightly higher than
+  // silver (0.30 vs 0.25) because gold reflections have more visible
+  // chromaticity — real gold leaf is famously warm-tinting.
+  vec3 ink_color = base_rgb;
+  ink_color = mix(ink_color, ink_color * substrate * 1.5, 0.30);
+  // Additive warm-cream highlight on the sweep bands.
+  vec3 ink_bloom = GOLD_PEAK * clamp(highlight * 0.70, 0.0, 1.0);
+  ink_bloom += GOLD_PEAK * clamp(sparkle * 1.2, 0.0, 1.0);
+  ink_color = ink_color + ink_bloom;
+  ink_color = clamp(ink_color, 0.0, 1.0);
+
+  // Composition.
+  vec3 rgb = mix(substrate_color, ink_color, ink_density);
+
+  // Alpha — identical curve to silver. High over bleed, low over
+  // dark ink, high over bright ink (push the gold through so white
+  // ink reads as gold).
+  float bleed_alpha_mix = mix(0.94, 0.55, base_alpha * (1.0 - in_artwork));
+  float ink_alpha = mix(0.92, 0.18, base_brightness);
+  float alpha = mix(bleed_alpha_mix, ink_alpha, in_artwork) + highlight * 0.30;
+  alpha = clamp(alpha, 0.0, 0.97);
+
+  return vec4(rgb, alpha * in_cut);
+}
+
 // === Luminescent mode (unified substrate model) ===
 //
 // Glow-in-the-dark vinyl. Same architecture as holographic: the entire
@@ -861,8 +976,12 @@ void main() {
   //   4 = eggshell_holografico (warm pastel, soft diffuse foil)
   //   5 = silver / plateado (neutral metallic chrome — white ink
   //       reads as bright silver, colored ink keeps hue + sheen)
+  //   6 = gold / dorado (warm metallic — white ink reads as bright
+  //       gold, colored ink keeps hue + warm sheen)
   vec4 col;
-  if (u_mode > 4.5) {
+  if (u_mode > 5.5) {
+    col = mode_gold(in_cut, in_artwork);
+  } else if (u_mode > 4.5) {
     col = mode_silver(in_cut, in_artwork);
   } else if (u_mode > 3.5) {
     col = mode_holographic_with_params(in_cut, in_artwork, params_eggshell_holografico());
@@ -1181,6 +1300,7 @@ export function useHolographicFX() {
       | 'luminescent'
       | 'eggshell_holographic'
       | 'silver'
+      | 'gold'
       | null,
   ) {
     if (mode === null) {
@@ -1188,10 +1308,10 @@ export function useHolographicFX() {
       textureStrength = 0
       return
     }
-    // Silver has no AI macro texture today (procedural-only). Bail
-    // before the MATERIAL_MACRO_URLS lookup so we don't try to load
-    // a URL that doesn't exist.
-    if (mode === 'silver') {
+    // Silver and gold are procedural-only — no AI macro texture
+    // bundled today. Bail before the MATERIAL_MACRO_URLS lookup so
+    // we don't try to load a URL that doesn't exist.
+    if (mode === 'silver' || mode === 'gold') {
       hasTexture = 0
       textureStrength = 0
       return
@@ -1348,6 +1468,7 @@ export function useHolographicFX() {
       | 'luminescent'
       | 'eggshell_holographic'
       | 'silver'
+      | 'gold'
       | null,
   ) {
     if (m === 'holographic') modeValue = 1
@@ -1355,6 +1476,7 @@ export function useHolographicFX() {
     else if (m === 'luminescent') modeValue = 3
     else if (m === 'eggshell_holographic') modeValue = 4
     else if (m === 'silver') modeValue = 5
+    else if (m === 'gold') modeValue = 6
     else modeValue = 0
     enabled.value = modeValue > 0
     targetIntensity = modeValue > 0 ? 1 : 0
