@@ -12,8 +12,11 @@ const variantClasses: Record<ToastVariant, string> = {
 </script>
 
 <template>
+  <!-- top-20 / md:top-24 keep the toast below the sticky AppHeader
+       (h-16 mobile / h-[88px] desktop). Earlier value of top-4 collided
+       with the header content (Mi cuenta / Salir links). -->
   <div
-    class="fixed right-4 top-4 z-[60] flex w-full max-w-sm flex-col gap-2"
+    class="fixed right-4 top-20 z-[60] flex w-full max-w-sm flex-col gap-2 md:top-24"
     aria-live="polite"
   >
     <div

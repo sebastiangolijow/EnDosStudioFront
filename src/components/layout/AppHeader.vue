@@ -17,7 +17,11 @@ const navLinks = computed(() => [
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 border-b border-border bg-bg/80 backdrop-blur">
+  <!-- bg-bg/95 (was /80) so the sticky header reads as a solid bar.
+       The earlier 80% opacity + backdrop-blur let scrolling content
+       bleed through and looked like a duplicate band on long pages
+       (especially the admin order detail screen). -->
+  <header class="sticky top-0 z-40 border-b border-border bg-bg/95 backdrop-blur">
     <!-- Header bar — shrinks at narrow widths (px-4 on mobile vs px-8+
          on desktop) so the logo + auth controls don't crowd. The
          middle nav is hidden < md anyway. -->

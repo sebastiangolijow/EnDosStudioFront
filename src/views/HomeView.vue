@@ -117,26 +117,27 @@ const visibleInspiration = computed(() =>
 </script>
 
 <template>
-  <!-- HERO — sized so hero + Cómo funciona pills BOTH fit above the
-       fold on a typical laptop (1080-1440 px tall). 70svh - header
-       leaves ~100 px for the pills section to land just at or above
-       the fold. Inspírate stays well below. -->
-  <section class="flex h-[calc(70svh-88px)] min-h-[480px] flex-col justify-center overflow-hidden px-8 pt-8 md:px-12 md:pt-12 lg:px-16">
-    <div class="grid h-full gap-12 md:grid-cols-2 md:items-center">
+  <!-- HERO — desktop is height-capped (70svh − header) so it + Cómo
+       funciona BOTH fit above the fold on a typical laptop. Mobile
+       drops the cap entirely and lets the column flow: forcing a
+       fixed height on a narrow viewport pushed the CTAs into
+       overflow-hidden behind the next section. -->
+  <section class="flex flex-col justify-center overflow-visible px-4 pb-12 pt-8 md:h-[calc(70svh-88px)] md:min-h-[480px] md:overflow-hidden md:px-12 md:pt-12 md:pb-0 lg:px-16">
+    <div class="grid gap-8 md:h-full md:grid-cols-2 md:items-center md:gap-12">
       <!-- Left: copy + CTAs. Padded inward (md:pl-8 lg:pl-16) so the
            headline doesn't hug the screen edge — sits a bit further
            toward the page center, closer to the hero visual. -->
       <div class="md:pl-8 lg:pl-16">
-        <h1 class="text-[72px] font-bold leading-[1.02] tracking-tight text-text md:text-[80px] lg:text-[88px]">
+        <h1 class="text-5xl font-bold leading-[1.02] tracking-tight text-text sm:text-6xl md:text-[80px] lg:text-[88px]">
           TU DISEÑO.<br>
           TU STICKER.<br>
           <span class="text-primary">SIN LÍMITES.</span>
         </h1>
-        <p class="mt-8 max-w-xl text-xl text-text-muted">
+        <p class="mt-6 max-w-xl text-base text-text-muted md:mt-8 md:text-xl">
           Sube tu diseño, personaliza cada detalle, y nosotros lo convertimos en stickers de la
           mejor calidad.
         </p>
-        <div class="mt-10 flex flex-wrap items-center gap-4">
+        <div class="mt-6 flex flex-wrap items-center gap-3 md:mt-10 md:gap-4">
           <AppButton
             size="lg"
             data-testid="home-view-new-sticker"
@@ -155,14 +156,12 @@ const visibleInspiration = computed(() =>
         </div>
       </div>
 
-      <!-- Right: hero sticker visual on cosmic backdrop. The container is
-           sized to fit WITHIN the hero section's fixed height (the
-           outer flex item provides h-full; aspect-square would
-           otherwise drive the box from width and overflow on wide
-           screens). max-h-full + aspect-square + mx-auto means the
-           square shrinks to whatever fits and stays centered in the
-           grid cell. -->
-      <div class="relative mx-auto aspect-square h-full max-h-full overflow-hidden rounded-xl border border-border">
+      <!-- Right: hero sticker visual on cosmic backdrop. On desktop the
+           container is height-capped (h-full inside the section's
+           fixed height) so the square shrinks to whatever fits. On
+           mobile it just renders at the column width as a clean
+           aspect-square. -->
+      <div class="relative mx-auto aspect-square w-full max-w-md overflow-hidden rounded-xl border border-border md:h-full md:max-h-full md:w-auto md:max-w-none">
         <!-- Cosmic gradient layer -->
         <div
           class="absolute inset-0 bg-gradient-to-br from-violet-900/30 via-bg to-cyan-900/20"
