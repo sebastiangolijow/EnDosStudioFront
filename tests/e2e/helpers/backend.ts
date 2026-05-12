@@ -55,10 +55,14 @@ export interface SeededCustomer {
  *
  * Each call generates a unique email so concurrent tests don't collide.
  */
-export function seedActiveCustomer(): SeededCustomer {
+export function seedActiveCustomer(
+  options: { email?: string; first_name?: string; last_name?: string } = {},
+): SeededCustomer {
   const suffix = Math.random().toString(36).slice(2, 10)
-  const email = `e2e-${suffix}@example.com`
+  const email = options.email ?? `e2e-${suffix}@example.com`
   const password = 'TestPass123!'
+  const firstName = options.first_name ?? 'E2E'
+  const lastName = options.last_name ?? 'Test'
 
   // Multi-statement Python: create user + matching EmailAddress (without that
   // row, allauth silently rejects login — see backend CLAUDE.md "EmailAddress trap").
@@ -67,7 +71,7 @@ export function seedActiveCustomer(): SeededCustomer {
     'import django; django.setup()',
     'from apps.users.models import User',
     'from allauth.account.models import EmailAddress',
-    `u = User.objects.create_user(email='${email}', password='${password}', role='customer', is_active=True, is_verified=True, first_name='E2E', last_name='Test')`,
+    `u = User.objects.create_user(email='${email}', password='${password}', role='customer', is_active=True, is_verified=True, first_name='${firstName}', last_name='${lastName}')`,
     `EmailAddress.objects.create(user=u, email='${email}', verified=True, primary=True)`,
   ].join('; ')
 
@@ -198,6 +202,39 @@ export function seedDraftForCustomer(customer: SeededCustomer): string {
     'from apps.orders.models import Order',
     `u = User.objects.get(email='${customer.email}')`,
     "o = Order.objects.create(created_by=u, status='draft')",
+    'print(o.uuid)',
+  ].join('; ')
+  return runInBackendShell(code).trim()
+}
+
+/**
+ * Create an Order at a specific status with the gold-standard sticker
+ * spec. Used by admin-orders specs that exercise transitions
+ * (placed→paid via mark-paid, paid→in_production, etc.).
+ */
+export function seedOrderForCustomer(
+  customer: SeededCustomer,
+  options: { status?: string } = {},
+): string {
+  const status = options.status ?? 'placed'
+  const code = [
+    "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
+    'import django; django.setup()',
+    'from apps.users.models import User',
+    'from apps.orders.models import Order',
+    `u = User.objects.get(email='${customer.email}')`,
+    [
+      'o = Order.objects.create(',
+      'created_by=u,',
+      `status='${status}',`,
+      "material='vinilo_blanco',",
+      'width_mm=100, height_mm=100, quantity=100,',
+      'total_amount_cents=11000,',
+      "recipient_name='Test Recipient',",
+      "street_line_1='Carrer 1',",
+      "city='Barcelona', postal_code='08001', country='ES',",
+      ')',
+    ].join(' '),
     'print(o.uuid)',
   ].join('; ')
   return runInBackendShell(code).trim()

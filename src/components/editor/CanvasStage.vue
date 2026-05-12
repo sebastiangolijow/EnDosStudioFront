@@ -138,6 +138,49 @@ onBeforeUnmount(() => {
 })
 
 /**
+ * Composite the visible canvas layers (mask + base + FX) into a single PNG
+ * blob — what the customer sees in the editor minus the UI overlay.
+ *
+ * Used on Continuar to upload `preview_composite` so the shop owner's
+ * admin detail view shows the customer's exact final design, including
+ * the holographic FX shimmer they chose. Without this snapshot the
+ * admin only has the raw original PNG + the cut polygon — they'd have
+ * to recompose the layers mentally.
+ *
+ * Strategy: each on-screen canvas has its own DOM size (CSS pixels);
+ * we draw all 4 onto an OffscreenCanvas at the BACKING resolution
+ * (canvas.width / canvas.height — DPR-aware). The FX canvas is
+ * WebGL, which CAN be passed to drawImage just like a 2D canvas
+ * (browsers handle the context type transparently). Mask first, then
+ * base, then FX — same z-order as the DOM. UI layer skipped (it
+ * only paints the cursor, irrelevant to the snapshot).
+ *
+ * Returns null when no artwork has been loaded yet (nothing to
+ * snapshot). Best-effort: a missing FX canvas is just skipped, not
+ * fatal.
+ */
+async function getCompositeAsBlob(): Promise<Blob | null> {
+  if (!image.value) return null
+  const base = baseCanvas.value
+  const mask = maskCanvas.value
+  const fxC = fx.canvas.value
+  if (!base) return null
+  const w = base.width
+  const h = base.height
+  if (!w || !h) return null
+  const off = new OffscreenCanvas(w, h)
+  const ctx = off.getContext('2d')
+  if (!ctx) return null
+  ctx.clearRect(0, 0, w, h)
+  if (mask) ctx.drawImage(mask, 0, 0, w, h)
+  ctx.drawImage(base, 0, 0, w, h)
+  if (fxC && fxC.width > 0 && fxC.height > 0) {
+    ctx.drawImage(fxC, 0, 0, w, h)
+  }
+  return await off.convertToBlob({ type: 'image/png' })
+}
+
+/**
  * Imperative methods exposed via ref. The parent (EditorView) calls these
  * after wiring up the composable's data — e.g. when an Auto-detect button
  * is clicked or the customer presses Continuar.
@@ -171,6 +214,7 @@ defineExpose({
   ) => setEffectMode(mode),
   setSmoothingSlider: (value: number) => setSmoothingSlider(value),
   getMaskAsBlob: () => getMaskAsBlob(),
+  getCompositeAsBlob: () => getCompositeAsBlob(),
   reset: () => reset(),
   hasImage: () => !!image.value,
   hasMask: () => !!maskPoints.value && maskPoints.value.length > 0,

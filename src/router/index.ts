@@ -79,18 +79,22 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
 
-  // --- Admin (M2: Django admin covers ops; these views are post-MVP shells) ---
+  // --- Admin orders (staff: admin OR shop_staff) ---
+  // Mirrors the backend's _is_staff permission used by start-production /
+  // ship / mark-paid. Originally requiresAdmin (admin-only) but that was
+  // inconsistent with the backend; shop_staff employees need to manage
+  // the print queue without being full admins.
   {
     path: '/admin/orders',
     name: 'admin-orders',
     component: () => import('@/views/AdminOrdersView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true },
+    meta: { requiresAuth: true, requiresStaff: true },
   },
   {
     path: '/admin/orders/:uuid',
     name: 'admin-order-detail',
     component: () => import('@/views/AdminOrderDetailView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true },
+    meta: { requiresAuth: true, requiresStaff: true },
   },
 
   // --- Catalog admin (M3a) — staff (admin OR shop_staff) ---

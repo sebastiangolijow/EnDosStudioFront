@@ -71,7 +71,21 @@ export const DIMENSION_STEP_MM = 5
 export const MIN_QUANTITY = 20
 export const MAX_QUANTITY = 100_000
 
-export type OrderFileKind = 'original' | 'die_cut_mask'
+/** File kinds we can upload to an order.
+ *
+ * `original`         — customer's source design (uploaded in step 1)
+ * `die_cut_mask`     — the cut polygon image the editor produces (uploaded
+ *                      on Continuar from the editor)
+ * `preview_composite`— PNG snapshot of the editor's final canvas view
+ *                      (artwork + halo + material FX as the customer
+ *                      saw it). Uploaded on Continuar so the admin can
+ *                      see exactly what the customer designed.
+ *
+ * `cut_path` (server-generated SVG) is read-only from the frontend — the
+ * backend creates it at transition_to_paid. Not in this union because
+ * we never upload it.
+ */
+export type OrderFileKind = 'original' | 'die_cut_mask' | 'preview_composite'
 // 'relief_mask' is reserved for when drawn-relief lands; not in M2.
 
 /**
@@ -120,6 +134,12 @@ export interface Order {
   city: string
   postal_code: string
   country: string
+
+  // Customer (read-only, populated by the backend serializer for the
+  // admin orders screen). Empty strings when created_by is null
+  // (SET_NULL'd by a user delete).
+  customer_email: string
+  customer_name: string
 
   // Money
   total_amount_cents: number
@@ -176,6 +196,24 @@ export interface CreateCatalogOrderPayload {
   kind: 'catalog'
   product: string // UUID
   product_quantity: number
+}
+
+/** Query params accepted by GET /orders/.
+ *  Used both by customer list views (sparse — usually no params) and
+ *  the admin orders screen (heavy filter/search/sort). All fields are
+ *  optional; the service skips undefined/empty values. */
+export interface OrderListParams {
+  status?: OrderStatus
+  status_in?: string // comma-separated, e.g. "paid,in_production"
+  kind?: OrderKind
+  search?: string // icontains across uuid + customer fields + recipient
+  ordering?: string // e.g. "-placed_at"
+  created_after?: string // ISO datetime
+  created_before?: string
+  placed_after?: string
+  placed_before?: string
+  page?: number
+  page_size?: number // capped at 100 server-side
 }
 
 export interface PriceQuoteRequest {

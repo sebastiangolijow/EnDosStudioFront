@@ -35,9 +35,16 @@ const customerLinks: NavLink[] = [
 
 const adminLinks: NavLink[] = [
   { to: '/admin/orders', label: 'Pedidos (admin)', icon: '📋' },
+  { to: '/admin/products', label: 'Productos', icon: '🛍️' },
 ]
 
-const links = computed(() => (auth.isAdmin ? [...customerLinks, ...adminLinks] : customerLinks))
+// Visible to both admin and shop_staff — same set the backend uses for
+// staff-only endpoints (admin OR shop_staff). Was `isAdmin` only, which
+// hid the orders/products screens from shop_staff employees even though
+// the backend would have authorized them.
+const links = computed(() =>
+  auth.isShopStaff ? [...customerLinks, ...adminLinks] : customerLinks,
+)
 
 function isActive(link: NavLink): boolean {
   if (link.disabled) return false

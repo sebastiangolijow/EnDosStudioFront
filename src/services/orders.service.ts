@@ -4,6 +4,7 @@ import type {
   CheckoutResponse,
   CreateCatalogOrderPayload,
   Order,
+  OrderListParams,
   OrderUpdatePayload,
   PriceQuoteRequest,
   PriceQuoteResponse,
@@ -13,8 +14,34 @@ import type {
 export const ordersService = {
   // === CRUD ===
 
-  async list(): Promise<Paginated<Order>> {
-    const response = await api.get('/orders/')
+  /**
+   * GET /orders/ with optional filter/search/ordering query params.
+   *
+   * Customers calling without params get their own orders (queryset is
+   * role-scoped server-side). The admin orders screen uses every param:
+   *   - status         exact match (paid | in_production | …)
+   *   - status_in      comma-separated list (e.g. "paid,in_production")
+   *   - kind           sticker | catalog
+   *   - search         icontains across uuid + customer email/name + recipient
+   *   - ordering       e.g. "-placed_at" (default backend ordering: -created_at)
+   *   - created_after  ISO datetime
+   *   - created_before ISO datetime
+   *   - placed_after   ISO datetime
+   *   - placed_before  ISO datetime
+   *   - page           1-based pagination
+   *   - page_size      capped at 100 server-side
+   *
+   * Empty/undefined params are skipped so axios doesn't serialize them
+   * as `?key=` (which the backend treats as "filter by empty string").
+   */
+  async list(params: OrderListParams = {}): Promise<Paginated<Order>> {
+    const cleanParams: Record<string, string | number> = {}
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') {
+        cleanParams[k] = v as string | number
+      }
+    }
+    const response = await api.get('/orders/', { params: cleanParams })
     return response.data
   },
 
@@ -85,6 +112,17 @@ export const ordersService = {
   /** Customer-only. shipped → delivered. */
   async deliver(uuid: string): Promise<Order> {
     const response = await api.post(`/orders/${uuid}/deliver/`)
+    return response.data
+  },
+
+  /** Staff-only. placed → paid.
+   *
+   * Manual fallback for shop owners handling payment out-of-band (bank
+   * transfer, cash on pickup). Stripe webhook drives the same
+   * transition automatically when payment confirms; this is the
+   * admin's escape hatch. */
+  async markPaid(uuid: string): Promise<Order> {
+    const response = await api.post(`/orders/${uuid}/mark-paid/`)
     return response.data
   },
 
