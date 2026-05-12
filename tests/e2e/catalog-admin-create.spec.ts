@@ -9,8 +9,18 @@ import {
   cleanupSeededUsers,
   expectBackendUp,
   seedShopStaff,
+  trackSeededProductSlug,
   type SeededCustomer,
 } from './helpers/backend'
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(__dirname, 'fixtures/sample-design.png')
@@ -64,6 +74,11 @@ test.describe('catalog admin create', () => {
     await page.getByTestId('admin-product-price-eur').fill('25')
     await page.getByTestId('admin-product-stock').fill('7')
     await page.getByTestId('admin-product-image').setInputFiles(FIXTURE)
+    // Register the auto-generated slug so afterAll cleanup removes the
+    // product + its media dir. Without this the catalog accumulates
+    // garbage rows across runs and the real product list looks
+    // populated when it shouldn't be.
+    trackSeededProductSlug(slugify(uniqueName))
 
     // Submit
     await page.getByTestId('admin-product-submit').click()

@@ -30,6 +30,23 @@ function runInBackendShell(code: string): string {
   }
 }
 
+/** Run a multi-line Python script via stdin (no `python -c` quoting hell).
+ *  Use for cleanup paths that need real Python control flow (for-loops, etc.). */
+function runInBackendShellScript(script: string): string {
+  const cmd = `cd ${BACKEND_DIR} && docker compose exec -T web python -`
+  try {
+    return execSync(cmd, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      input: script,
+    }).trim()
+  } catch (err) {
+    const e = err as { stdout?: Buffer; stderr?: Buffer; message: string }
+    const detail = (e.stderr?.toString() ?? e.stdout?.toString() ?? e.message).trim()
+    throw new Error(`backend shell failed: ${detail}`)
+  }
+}
+
 /** Throws if the backend container isn't responsive. Call from `beforeAll` to guard. */
 export function expectBackendUp(): void {
   try {
@@ -274,6 +291,17 @@ export function seedOrderForCustomer(
  */
 const seededInThisFile: string[] = []
 const seededProductsInThisFile: string[] = []
+/** Slugs of products created via the UI (not the seedProduct helper).
+ *  catalog-admin-create.spec.ts uses this — when the test fills the
+ *  admin form, only the slug is observable client-side. */
+const seededProductSlugsInThisFile: string[] = []
+
+/** Register a product slug for afterAll cleanup. Use from specs that
+ *  create products through the UI (where the seedProduct helper +
+ *  its uuid tracking aren't available). */
+export function trackSeededProductSlug(slug: string): void {
+  seededProductSlugsInThisFile.push(slug)
+}
 
 /** Delete users (and seeded products) seeded by THIS test file only. Call from `afterAll`. */
 export function cleanupSeededUsers(): void {
@@ -294,6 +322,39 @@ export function cleanupSeededUsers(): void {
     ].join('; ')
     runInBackendShell(code)
     seededProductsInThisFile.length = 0
+  }
+
+  if (seededProductSlugsInThisFile.length > 0) {
+    // Same cleanup but keyed by slug (UI-created products). Also
+    // removes the /media/products/<uuid>/ dir so disk doesn't fill
+    // up across test runs — Django doesn't auto-delete files when
+    // a FileField row is deleted.
+    const slugList = seededProductSlugsInThisFile.map((s) => `'${s}'`).join(',')
+    const py = `
+import os
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')
+import django
+django.setup()
+import shutil
+from pathlib import Path
+from apps.products.models import Product
+from apps.orders.models import Order
+
+qs = Product.objects.filter(slug__in=[${slugList}])
+dirs = []
+for p in qs:
+    if p.image and p.image.name:
+        parts = p.image.name.split('/')
+        if len(parts) >= 2:
+            dirs.append(Path('/app/media/products') / parts[1])
+uuids = list(qs.values_list('uuid', flat=True))
+Order.objects.filter(product__uuid__in=uuids).update(product=None, product_quantity=0)
+qs.delete()
+for d in dirs:
+    shutil.rmtree(d, ignore_errors=True)
+`
+    runInBackendShellScript(py)
+    seededProductSlugsInThisFile.length = 0
   }
 
   if (seededInThisFile.length > 0) {

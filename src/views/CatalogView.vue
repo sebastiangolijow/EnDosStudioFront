@@ -83,9 +83,12 @@ onMounted(load)
       Todavía no hay productos en el catálogo. Volvé pronto.
     </div>
 
+    <!-- Catalog grid — denser layout: 2 cols on mobile, scaling up to
+         5 on wide desktop. Larger gap (gap-6 / lg:gap-8) gives the
+         cards breathing room without the page feeling sparse. -->
     <div
       v-else
-      class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3"
+      class="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-4 lg:gap-8 xl:grid-cols-5"
       data-testid="catalog-grid"
     >
       <ProductCard

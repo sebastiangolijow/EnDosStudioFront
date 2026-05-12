@@ -30,19 +30,22 @@ defineProps<{
 
       <span
         v-if="product.stock_quantity === 0"
-        class="absolute right-3 top-3 rounded-full bg-error/90 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white"
+        class="absolute right-2 top-2 rounded-full bg-error/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
         data-testid="product-card-out-of-stock"
       >
         Sin stock
       </span>
     </div>
 
-    <!-- Body -->
-    <div class="flex flex-1 flex-col gap-2 p-4">
-      <h3 class="text-base font-semibold text-text">
+    <!-- Body — compact padding + smaller type so the card reads as a
+         tile in a dense grid (2 cols mobile → 5 cols wide desktop).
+         Description hidden on mobile (truncates the grid otherwise);
+         shown line-clamped from sm:. -->
+    <div class="flex flex-1 flex-col gap-1 p-3">
+      <h3 class="line-clamp-2 text-sm font-semibold text-text">
         {{ product.name }}
       </h3>
-      <p class="line-clamp-2 text-sm text-text-muted">
+      <p class="hidden line-clamp-2 text-xs text-text-muted sm:block">
         {{ product.description }}
       </p>
       <div class="mt-auto flex items-baseline justify-between pt-2">
@@ -53,21 +56,21 @@ defineProps<{
           class="flex flex-col leading-tight"
           data-testid="product-card-sale-price"
         >
-          <span class="text-xs text-text-muted line-through">
+          <span class="text-[10px] text-text-muted line-through">
             €{{ product.price_eur }}
           </span>
-          <span class="text-h3 font-bold text-primary">
+          <span class="text-base font-bold text-primary">
             €{{ product.sale_price_eur }}
           </span>
         </span>
         <span
           v-else
-          class="text-h3 font-bold text-text"
+          class="text-base font-bold text-text"
         >
           €{{ product.price_eur }}
         </span>
         <span
-          class="text-sm text-primary opacity-0 transition group-hover:opacity-100"
+          class="text-xs text-primary opacity-0 transition group-hover:opacity-100"
           aria-hidden="true"
         >Ver →</span>
       </div>
