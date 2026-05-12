@@ -27,13 +27,23 @@ function buildFormData(payload: ProductWritePayload): FormData {
 export const productsService = {
   // === Public ===
 
+  /** Public catalog list. Always passes ?is_active=true so staff
+   *  viewing /catalogo see exactly what customers see (the backend
+   *  would otherwise return inactive rows to staff thanks to the
+   *  role-aware queryset). Staff manage hidden products via
+   *  /admin/products + adminList. */
   async list(): Promise<Paginated<Product>> {
-    const response = await api.get('/products/')
+    const response = await api.get('/products/', { params: { is_active: 'true' } })
     return response.data
   },
 
+  /** Public retrieve — same is_active=true gate as list. A staff member
+   *  hitting /catalogo/{slug} for a hidden product should get a 404,
+   *  not the hidden detail page. */
   async getBySlug(slug: string): Promise<Product> {
-    const response = await api.get(`/products/${slug}/`)
+    const response = await api.get(`/products/${slug}/`, {
+      params: { is_active: 'true' },
+    })
     return response.data
   },
 
