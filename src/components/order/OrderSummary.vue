@@ -41,6 +41,16 @@ const materialLabel = computed(() =>
   props.material ? MATERIAL_LABELS[props.material] : '—',
 )
 
+/** Active acabado label + surcharge (relieve/brillo/opaco are mutually
+ *  exclusive — see OrderConfigView). Tinta blanca is independent and
+ *  rendered separately. */
+const acabadoLine = computed<{ label: string; surcharge: string } | null>(() => {
+  if (props.withRelief) return { label: 'Relieve', surcharge: '+35%' }
+  if (props.withBarnizBrillo) return { label: 'Barniz brillo', surcharge: '+20%' }
+  if (props.withBarnizOpaco) return { label: 'Barniz opaco', surcharge: '+20%' }
+  return null
+})
+
 /** Disable the CTA when the order isn't fully specified or while quoting. */
 const ctaDisabled = computed(
   () =>
@@ -100,15 +110,18 @@ const ctaDisabled = computed(
           {{ quantity }} unidades
         </dd>
       </div>
+      <!-- Acabado — at most one of relieve/brillo/opaco can be true.
+           Tinta blanca is independent and rendered as its own line. -->
       <div
-        v-if="withRelief"
+        v-if="acabadoLine"
         class="flex justify-between gap-3"
       >
         <dt class="uppercase tracking-wide text-text-muted">
-          + Relieve
+          Acabado
         </dt>
         <dd class="font-medium text-text">
-          +35%
+          {{ acabadoLine.label }}
+          <span class="text-text-muted">{{ acabadoLine.surcharge }}</span>
         </dd>
       </div>
       <div
@@ -120,28 +133,6 @@ const ctaDisabled = computed(
         </dt>
         <dd class="font-medium text-text">
           +35%
-        </dd>
-      </div>
-      <div
-        v-if="withBarnizBrillo"
-        class="flex justify-between gap-3"
-      >
-        <dt class="uppercase tracking-wide text-text-muted">
-          + Barniz brillo
-        </dt>
-        <dd class="font-medium text-text">
-          +20%
-        </dd>
-      </div>
-      <div
-        v-if="withBarnizOpaco"
-        class="flex justify-between gap-3"
-      >
-        <dt class="uppercase tracking-wide text-text-muted">
-          + Barniz opaco
-        </dt>
-        <dd class="font-medium text-text">
-          +20%
         </dd>
       </div>
     </dl>

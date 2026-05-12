@@ -1,6 +1,13 @@
 /**
- * Order config spec — does step 3 (material/size/quantity) actually wire to
- * the backend's PATCH /orders/{uuid}/ + GET /orders/quote/?
+ * Order config spec — simplified after 2026-05-12 demo feedback.
+ *
+ * Material + shape were moved entirely to the editor (step 1). This
+ * screen now handles only size, quantity, acabado, and tinta blanca.
+ * Acabado is a single mutually-exclusive radio group across relieve /
+ * barniz brillo / barniz opaco; tinta blanca is independent.
+ *
+ * The tests seed orders with material + shape ALREADY set (the editor
+ * would have done that). We then exercise what this page still owns.
  *
  * REQUIRES the Django backend running.
  */
@@ -11,7 +18,7 @@ import {
   cleanupSeededUsers,
   expectBackendUp,
   seedActiveCustomer,
-  seedDraftForCustomer,
+  seedOrderForCustomer,
   type SeededCustomer,
 } from './helpers/backend'
 
@@ -41,8 +48,9 @@ async function loginAs(page: Page, customer: SeededCustomer): Promise<string> {
   return access
 }
 
-/** Upload a file to a draft via the backend's REST endpoint, so the order
- *  has an `original` file that the summary thumbnail can render. */
+/** Attach an original file to a draft via the backend so the summary
+ *  thumbnail can render. seedOrderForCustomer creates an order with
+ *  material/dimensions/quantity already set; this adds the file. */
 async function uploadOriginal(
   page: Page,
   accessToken: string,
@@ -65,6 +73,14 @@ async function uploadOriginal(
   }
 }
 
+/** Seed a draft order with material+dimensions matching the editor
+ *  having already set them, but in draft status so order-config can
+ *  load it. seedOrderForCustomer defaults to status='placed' which
+ *  would redirect to checkout; pass status='draft' instead. */
+function seedDraftWithMaterial(customer: SeededCustomer): string {
+  return seedOrderForCustomer(customer, { status: 'draft' })
+}
+
 test.describe('order config', () => {
   test.describe.configure({ mode: 'serial' })
 
@@ -75,156 +91,119 @@ test.describe('order config', () => {
     cleanupSeededUsers()
   })
 
-  test('full flow: pick material → size → quantity → see total → continue', async ({ page }) => {
-    const customer = seedActiveCustomer()
-    const accessToken = await loginAs(page, customer)
-    const draftUuid = seedDraftForCustomer(customer)
-    await uploadOriginal(page, accessToken, draftUuid)
-
-    await page.goto(`/order-config/${draftUuid}`)
-
-    // Stepper: step 3 active
-    await expect(page.getByText('Material y tamaño')).toBeVisible()
-
-    // Pick a material — holografico is small enough at 5×5 q=50 to hit
-    // the 20€ floor under the new (2026-05-09) formula. Useful here as a
-    // visible signal that the floor logic is wired end-to-end.
-    await page.getByTestId('material-holografico').click()
-    await expect(page.getByTestId('material-holografico')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
-
-    // Pick a size (5 cm)
-    await page.getByTestId('size-50').click()
-
-    // Bump quantity from default 100 down to 50 (10 clicks at step=5)
-    for (let i = 0; i < 10; i++) {
-      await page.getByTestId('quantity-decrease').click()
-    }
-    await expect(page.getByTestId('quantity-input')).toHaveValue('50')
-
-    // ((50+15)/1000)² × 50 × 50€ = 10.5625€ → floored to 20.00€
-    await expect(page.getByTestId('summary-total')).toHaveText(/20\.00/, { timeout: 5_000 })
-
-    // Click Continuar al pago — should PATCH the order then route to /checkout/{uuid}
-    await page.getByTestId('summary-continue').click()
-    await expect(page).toHaveURL(new RegExp(`/checkout/${draftUuid}$`), { timeout: 10_000 })
-
-    // Verify the backend now has the order patched
-    const orderRes = await page.request.get(
-      `http://localhost:8000/api/v1/orders/${draftUuid}/`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    )
-    const order = await orderRes.json()
-    expect(order.material).toBe('holografico')
-    expect(order.width_mm).toBe(50)
-    expect(order.height_mm).toBe(50)
-    expect(order.quantity).toBe(50)
-  })
-
-  test('add-ons: toggling relieve and barniz updates the total', async ({ page }) => {
-    const customer = seedActiveCustomer()
-    const accessToken = await loginAs(page, customer)
-    const draftUuid = seedDraftForCustomer(customer)
-    await uploadOriginal(page, accessToken, draftUuid)
-
-    await page.goto(`/order-config/${draftUuid}`)
-
-    // Pick a setup that sits comfortably above the 20€ floor so the
-    // additive percent surcharges actually move the displayed total.
-    // vinilo_blanco 10×10cm q=100 → 5951.25 cents ≈ 59.51€ subtotal.
-    await page.getByTestId('material-vinilo_blanco').click()
-    await page.getByTestId('size-100').click()
-    // quantity defaults to 100 — no clicks needed
-    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, { timeout: 5_000 })
-
-    // Barniz brillo (+20%): 59.5125 × 1.20 = 71.415 → 71.42€
-    await page.getByTestId('varnish-brillo').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/71\.42/, { timeout: 5_000 })
-
-    // Relieve (+35%): additive multiplier becomes 1.55 → 92.24€
-    await page.getByTestId('addon-relief').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/92\.24/, { timeout: 5_000 })
-
-    // Switch barniz brillo → opaco: same +20%, total unchanged at 92.24€
-    await page.getByTestId('varnish-opaco').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/92\.24/, { timeout: 5_000 })
-
-    // Switch barniz off (radio "none"): drops back to relieve only → 80.34€
-    // (5951.25 × 1.35 = 8034.1875 → 8034 cents)
-    await page.getByTestId('varnish-none').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/80\.34/, { timeout: 5_000 })
-  })
-
-  test('continue is disabled until material is picked', async ({ page }) => {
-    const customer = seedActiveCustomer()
-    const accessToken = await loginAs(page, customer)
-    const draftUuid = seedDraftForCustomer(customer)
-    await uploadOriginal(page, accessToken, draftUuid)
-
-    await page.goto(`/order-config/${draftUuid}`)
-
-    // No material picked yet → CTA disabled, no total shown
-    await expect(page.getByTestId('summary-continue')).toBeDisabled()
-
-    // Pick one → CTA enables once the quote arrives
-    await page.getByTestId('material-vinilo_blanco').click()
-    await expect(page.getByTestId('summary-continue')).toBeEnabled({ timeout: 5_000 })
-  })
-
-  test('shape: contorneado is the default and the editor CTA is always visible', async ({
+  test('size + quantity changes update the total; Continuar lands on /checkout', async ({
     page,
   }) => {
     const customer = seedActiveCustomer()
     const accessToken = await loginAs(page, customer)
-    const draftUuid = seedDraftForCustomer(customer)
+    const draftUuid = seedDraftWithMaterial(customer)
     await uploadOriginal(page, accessToken, draftUuid)
 
     await page.goto(`/order-config/${draftUuid}`)
 
-    // Default shape is contorneado — its card carries the selected style.
-    await expect(page.getByTestId('shape-contorneado')).toHaveAttribute('aria-pressed', 'true')
-    // Volver-al-editor bar always visible — every shape passes through the
-    // editor for margin adjustment, not just contorneado.
-    await expect(page.getByTestId('refine-contour-bar')).toBeVisible()
-  })
+    // Stepper: step 2 active (Material y tamaño). Two labels render
+    // (desktop + mobile via responsive show/hide); .first() picks one.
+    await expect(page.getByText('Material y tamaño').first()).toBeVisible()
 
-  test('shape: picking a geometric shape keeps the editor CTA visible', async ({ page }) => {
-    const customer = seedActiveCustomer()
-    const accessToken = await loginAs(page, customer)
-    const draftUuid = seedDraftForCustomer(customer)
-    await uploadOriginal(page, accessToken, draftUuid)
+    // Seeded order: vinilo_blanco 10×10 cm q=100 → 5951.25 cents ≈ 59.51€
+    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, {
+      timeout: 5_000,
+    })
 
-    await page.goto(`/order-config/${draftUuid}`)
-
-    await page.getByTestId('shape-circulo').click()
-    await expect(page.getByTestId('shape-circulo')).toHaveAttribute('aria-pressed', 'true')
-    // Geometric shapes still go through the editor (for margin adjustment).
-    await expect(page.getByTestId('refine-contour-bar')).toBeVisible()
-  })
-
-  test('shape: choice persists to the backend on Continuar', async ({ page }) => {
-    const customer = seedActiveCustomer()
-    const accessToken = await loginAs(page, customer)
-    const draftUuid = seedDraftForCustomer(customer)
-    await uploadOriginal(page, accessToken, draftUuid)
-
-    await page.goto(`/order-config/${draftUuid}`)
-
-    // Pick a non-default shape, plus the minimum needed to enable Continuar.
-    await page.getByTestId('shape-redondeadas').click()
-    await page.getByTestId('material-vinilo_blanco').click()
-    await expect(page.getByTestId('summary-continue')).toBeEnabled({ timeout: 5_000 })
+    // Continuar → /checkout/{uuid}
     await page.getByTestId('summary-continue').click()
+    await expect(page).toHaveURL(new RegExp(`/checkout/${draftUuid}$`), {
+      timeout: 10_000,
+    })
+  })
 
-    // Lands on /checkout — the backend now has shape=redondeadas.
-    await expect(page).toHaveURL(new RegExp(`/checkout/${draftUuid}$`), { timeout: 10_000 })
+  test('acabado radio: relieve, brillo, opaco are mutually exclusive', async ({
+    page,
+  }) => {
+    const customer = seedActiveCustomer()
+    const accessToken = await loginAs(page, customer)
+    const draftUuid = seedDraftWithMaterial(customer)
+    await uploadOriginal(page, accessToken, draftUuid)
+
+    await page.goto(`/order-config/${draftUuid}`)
+
+    // Seeded order at vinilo_blanco 10×10 q=100 → 59.51€ baseline.
+    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, {
+      timeout: 5_000,
+    })
+
+    // Pick barniz brillo (+20%): 59.51 × 1.20 = 71.42
+    await page.getByTestId('acabado-brillo').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/71\.42/, {
+      timeout: 5_000,
+    })
+
+    // Pick relieve (+35%): radio replaces brillo. Total = 59.51 × 1.35 = 80.34
+    await page.getByTestId('acabado-relieve').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/80\.34/, {
+      timeout: 5_000,
+    })
+
+    // Relief-note textarea appears when relieve is active.
+    await expect(page.getByTestId('relief-note')).toBeVisible()
+
+    // Switch back to "Sin acabado" → drops to baseline.
+    await page.getByTestId('acabado-none').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, {
+      timeout: 5_000,
+    })
+    // Relief-note input is hidden again.
+    await expect(page.getByTestId('relief-note')).toHaveCount(0)
+  })
+
+  test('tinta blanca is independent — adds 35% on top of any acabado', async ({
+    page,
+  }) => {
+    const customer = seedActiveCustomer()
+    const accessToken = await loginAs(page, customer)
+    const draftUuid = seedDraftWithMaterial(customer)
+    await uploadOriginal(page, accessToken, draftUuid)
+
+    await page.goto(`/order-config/${draftUuid}`)
+
+    // Pick tinta blanca alone (+35%): 59.51 × 1.35 = 80.34
+    await page.getByTestId('addon-tinta-blanca').click()
+    await expect(page.getByTestId('summary-total')).toHaveText(/80\.34/, {
+      timeout: 5_000,
+    })
+
+    // Add barniz brillo on top (+20%): combined multiplier 1.55 → 92.24
+    await page.getByTestId('acabado-brillo').check()
+    await expect(page.getByTestId('summary-total')).toHaveText(/92\.24/, {
+      timeout: 5_000,
+    })
+  })
+
+  test('acabado choice persists on PATCH at Continuar', async ({ page }) => {
+    const customer = seedActiveCustomer()
+    const accessToken = await loginAs(page, customer)
+    const draftUuid = seedDraftWithMaterial(customer)
+    await uploadOriginal(page, accessToken, draftUuid)
+
+    await page.goto(`/order-config/${draftUuid}`)
+
+    await page.getByTestId('acabado-opaco').check()
+    await expect(page.getByTestId('summary-continue')).toBeEnabled({
+      timeout: 5_000,
+    })
+    await page.getByTestId('summary-continue').click()
+    await expect(page).toHaveURL(new RegExp(`/checkout/${draftUuid}$`), {
+      timeout: 10_000,
+    })
+
+    // Backend reflects with_barniz_opaco=true, others false.
     const orderRes = await page.request.get(
       `http://localhost:8000/api/v1/orders/${draftUuid}/`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     )
     const order = await orderRes.json()
-    expect(order.shape).toBe('redondeadas')
+    expect(order.with_barniz_opaco).toBe(true)
+    expect(order.with_barniz_brillo).toBe(false)
+    expect(order.with_relief).toBe(false)
   })
 })

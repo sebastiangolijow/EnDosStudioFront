@@ -74,6 +74,12 @@ const stripeError = ref<string | null>(null)
 
 const thumbnailUrl = computed<string | null>(() => {
   if (!order.value) return null
+  // Prefer the editor's composite snapshot (artwork + halo + FX as
+  // the customer saw it) over the raw original upload. Falls back
+  // to original if the composite wasn't uploaded (early flows, or
+  // catalog orders which never run through the editor).
+  const composite = order.value.files.find((f) => f.kind === 'preview_composite')
+  if (composite) return composite.file
   const original = order.value.files.find((f) => f.kind === 'original')
   return original?.file ?? null
 })

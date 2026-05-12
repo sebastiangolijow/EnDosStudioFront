@@ -51,6 +51,12 @@ const thumbnailUrl = computed<string | null>(() => {
   if (isCatalogOrder.value) {
     return order.value.product_detail?.image ?? null
   }
+  // Prefer the editor's composite snapshot over the raw original upload —
+  // same reasoning as OrderConfigView / CheckoutView. The customer sees
+  // their final designed sticker (with FX) instead of the bare PNG they
+  // uploaded.
+  const composite = order.value.files.find((f) => f.kind === 'preview_composite')
+  if (composite) return composite.file
   const original = order.value.files.find((f) => f.kind === 'original')
   return original?.file ?? null
 })
