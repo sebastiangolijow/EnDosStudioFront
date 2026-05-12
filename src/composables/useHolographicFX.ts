@@ -730,11 +730,14 @@ vec4 mode_silver(float in_cut, float in_artwork) {
 // neutralize the warmth at hotspots) — it's a pale warm cream that
 // keeps the metallic character even at maximum specular.
 vec4 mode_gold(float in_cut, float in_artwork) {
-  // Three-stop warm metal ramp. SHADOW is a deep amber so unlit
-  // regions read as polished metal under low light, not flat brown.
-  vec3 GOLD_BASE   = vec3(0.93, 0.78, 0.36);  // warm gold midtone
-  vec3 GOLD_SHADOW = vec3(0.62, 0.45, 0.18);  // deep amber in lows
-  vec3 GOLD_PEAK   = vec3(1.00, 0.93, 0.70);  // pale warm cream at hotspots
+  // Three-stop warm metal ramp, pushed harder toward saturated
+  // yellow-gold than the v1 palette (which leaned neutral cream).
+  // Real polished gold reads as a strongly yellow material — the
+  // blue channel stays low across all three stops, and even the
+  // brightest specular keeps an amber tint instead of going white.
+  vec3 GOLD_BASE   = vec3(1.00, 0.78, 0.20);  // saturated 24k yellow-gold
+  vec3 GOLD_SHADOW = vec3(0.65, 0.42, 0.08);  // deep amber / bronze in lows
+  vec3 GOLD_PEAK   = vec3(1.00, 0.92, 0.45);  // bright warm yellow at hotspots (was 1.0/0.93/0.70 cream)
 
   // Brushed-metal grain — identical params to silver. The mottling
   // pattern is material-neutral; what makes "gold" is the palette.
