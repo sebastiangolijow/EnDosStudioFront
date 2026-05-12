@@ -67,14 +67,16 @@ test.describe('catalog public browse', () => {
 
     await expect(page.getByTestId('product-detail')).toBeVisible()
     await expect(page.getByRole('heading', { level: 1, name: 'Llavero Detalle' })).toBeVisible()
+    // Unit price displays pre-IVA (€20.00); Total includes IVA: 2000 ×
+    // 1.21 = 2420 → €24.20.
     await expect(page.getByText('€20.00').first()).toBeVisible()
     await expect(page.getByTestId('product-stock')).toContainText('5')
-    await expect(page.getByTestId('product-total')).toHaveText('€20.00')
+    await expect(page.getByTestId('product-total')).toHaveText('€24.20')
 
-    // Quantity stepper bumps the total
+    // Quantity stepper bumps the total. 2000 × 2 × 1.21 = 4840 → €48.40.
     await page.getByTestId('qty-increase').click()
     await expect(page.getByTestId('qty-value')).toHaveText('2')
-    await expect(page.getByTestId('product-total')).toHaveText('€40.00')
+    await expect(page.getByTestId('product-total')).toHaveText('€48.40')
 
     // Anonymous Comprar redirects to login with `next` query
     await page.getByTestId('product-buy').click()

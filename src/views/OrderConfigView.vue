@@ -58,6 +58,8 @@ const withBarnizOpaco = computed(() => acabado.value === 'opaco')
 
 // === Quote state ===
 const totalEur = ref<string>('')
+const subtotalEur = ref<string>('')
+const ivaEur = ref<string>('')
 const isQuoting = ref<boolean>(false)
 const isSaving = ref<boolean>(false)
 
@@ -146,6 +148,8 @@ async function fetchQuote() {
       with_barniz_opaco: withBarnizOpaco.value,
     })
     totalEur.value = quote.total_eur
+    subtotalEur.value = quote.subtotal_eur
+    ivaEur.value = quote.iva_eur
   } catch {
     // Keep the previous total visible — better than flickering "—".
     // The summary's "Calculando…" will only show if this is the first quote.
@@ -294,7 +298,7 @@ onMounted(loadOrder)
                     Sin acabado
                   </p>
                   <p class="text-xs text-text-muted">
-                    Acabado mate estándar.
+                    Acabado estándar.
                   </p>
                 </div>
               </label>
@@ -408,6 +412,8 @@ onMounted(loadOrder)
           :with-barniz-brillo="withBarnizBrillo"
           :with-barniz-opaco="withBarnizOpaco"
           :total-eur="totalEur"
+          :subtotal-eur="subtotalEur"
+          :iva-eur="ivaEur"
           :thumbnail-url="thumbnailUrl"
           :is-quoting="isQuoting"
           :cta-loading="isSaving"

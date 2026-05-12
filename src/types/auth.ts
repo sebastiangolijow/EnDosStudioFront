@@ -34,6 +34,10 @@ export interface RegisterPayload {
   password: string
   first_name?: string
   last_name?: string
+  /** Required at registration — the backend's RegisterSerializer
+   *  rejects requests without it (400). Stored on the User and used
+   *  to pre-fill checkout's shipping phone for future orders. */
+  phone_number: string
 }
 
 export interface SetPasswordPayload {

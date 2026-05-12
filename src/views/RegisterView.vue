@@ -10,6 +10,7 @@ const email = ref('')
 const password = ref('')
 const firstName = ref('')
 const lastName = ref('')
+const phoneNumber = ref('')
 const { register, status, error } = useAuth()
 
 function onSubmit() {
@@ -19,6 +20,7 @@ function onSubmit() {
     password: password.value,
     first_name: firstName.value,
     last_name: lastName.value,
+    phone_number: phoneNumber.value,
   })
 }
 </script>
@@ -54,6 +56,15 @@ function onSubmit() {
           type="email"
           autocomplete="email"
           required
+        />
+        <AppInput
+          v-model="phoneNumber"
+          label="Teléfono"
+          type="tel"
+          autocomplete="tel"
+          required
+          placeholder="+34 600 123 456"
+          helper="Lo usamos para coordinar el envío."
         />
         <AppInput
           v-model="password"

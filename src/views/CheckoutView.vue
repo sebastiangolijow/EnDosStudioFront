@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppStepper from '@/components/ui/AppStepper.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -9,11 +9,19 @@ import CatalogOrderSummary from '@/components/catalog/CatalogOrderSummary.vue'
 import ShippingForm from '@/components/order/ShippingForm.vue'
 import { ordersService } from '@/services/orders.service'
 import { useToast } from '@/composables/useToast'
-import { type Order } from '@/types/order'
+import { useAuthStore } from '@/stores/auth.store'
+import {
+  type Order,
+  type ShippingMethod,
+  SHIPPING_METHOD_ETA,
+  SHIPPING_METHOD_LABELS,
+  SHIPPING_METHOD_SURCHARGE_LABEL,
+} from '@/types/order'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const authStore = useAuthStore()
 
 // Stepper differs by kind. Catalog orders skip the editor + order-config —
 // they go straight from /catalogo/:slug to /checkout/:uuid.
@@ -46,6 +54,8 @@ const isProcessing = ref<boolean>(false)
  * use product_detail.price_cents × product_quantity (see totalEur).
  */
 const quotedTotalEur = ref<string>('')
+const quotedSubtotalEur = ref<string>('')
+const quotedIvaEur = ref<string>('')
 
 const isCatalogOrder = computed<boolean>(() => order.value?.kind === 'catalog')
 const stepper = computed(() => (isCatalogOrder.value ? CATALOG_STEPS : STICKER_STEPS))
@@ -59,6 +69,19 @@ const streetLine2 = ref<string>('')
 const city = ref<string>('')
 const postalCode = ref<string>('')
 const country = ref<string>('ES')
+// Contact for the courier. shipping_phone is required at place_order;
+// shipping_email is optional. Both pre-filled from auth.user where
+// possible (see hydrate logic in loadOrder).
+const shippingPhone = ref<string>('')
+const shippingEmail = ref<string>('')
+// Shipping speed — drives a multiplicative surcharge on the total
+// (express +20%, flash +60%, normal +0%). Default 'normal' matches
+// the backend default. Customer change → live re-quote + PATCH.
+const shippingMethod = ref<ShippingMethod>('normal')
+// UI-only static lists for the radio group (labels + ETAs + surcharges
+// come from the type module's labelled constants so they stay in sync
+// with the backend's choices).
+const SHIPPING_OPTIONS: ShippingMethod[] = ['normal', 'express', 'flash']
 
 // === Stripe handoff state ===
 /**
@@ -98,7 +121,11 @@ const totalEur = computed<string>(() => {
     return order.value.total_eur
   }
   if (order.value.kind === 'catalog' && order.value.product_detail) {
-    const cents = order.value.product_detail.price_cents * order.value.product_quantity
+    // Catalog pre-place: product price IS pre-IVA (matches backend
+    // _compute_catalog_total_cents). All-in = pre-IVA × 1.21.
+    const cents = Math.round(
+      order.value.product_detail.price_cents * order.value.product_quantity * 1.21,
+    )
     return (cents / 100).toFixed(2)
   }
   // Sticker order, pre-place_order: use the live quote we fetched in
@@ -107,13 +134,43 @@ const totalEur = computed<string>(() => {
   return quotedTotalEur.value || order.value.total_eur || ''
 })
 
+/**
+ * Pre-IVA subtotal for the summary card. Prefers (1) the order's stored
+ * breakdown once it's been placed, (2) the live quote response, (3) a
+ * client-side derivation from total / 1.21 for catalog pre-place. Spanish
+ * B2C convention surfaces this as its own line.
+ */
+const subtotalEur = computed<string>(() => {
+  if (!order.value) return ''
+  if (order.value.subtotal_cents > 0) return order.value.subtotal_eur
+  if (quotedSubtotalEur.value) return quotedSubtotalEur.value
+  if (order.value.kind === 'catalog' && order.value.product_detail) {
+    const cents = order.value.product_detail.price_cents * order.value.product_quantity
+    return (cents / 100).toFixed(2)
+  }
+  return ''
+})
+
+const ivaEur = computed<string>(() => {
+  if (!order.value) return ''
+  if (order.value.iva_cents > 0) return order.value.iva_eur
+  if (quotedIvaEur.value) return quotedIvaEur.value
+  if (order.value.kind === 'catalog' && order.value.product_detail) {
+    const subCents = order.value.product_detail.price_cents * order.value.product_quantity
+    const ivaCents = Math.round(subCents * 0.21)
+    return (ivaCents / 100).toFixed(2)
+  }
+  return ''
+})
+
 const formIsValid = computed<boolean>(
   () =>
     recipientName.value.trim().length > 0 &&
     streetLine1.value.trim().length > 0 &&
     city.value.trim().length > 0 &&
     postalCode.value.trim().length > 0 &&
-    country.value.trim().length === 2,
+    country.value.trim().length === 2 &&
+    shippingPhone.value.trim().length > 0,
 )
 
 async function loadOrder() {
@@ -152,9 +209,12 @@ async function loadOrder() {
           with_tinta_blanca: fetched.with_tinta_blanca,
           with_barniz_brillo: fetched.with_barniz_brillo,
           with_barniz_opaco: fetched.with_barniz_opaco,
+          shipping_method: fetched.shipping_method,
         })
         .then((q) => {
           quotedTotalEur.value = q.total_eur
+          quotedSubtotalEur.value = q.subtotal_eur
+          quotedIvaEur.value = q.iva_eur
         })
         .catch(() => {
           // Silent: the summary will keep showing the order's stored
@@ -171,6 +231,11 @@ async function loadOrder() {
     if (fetched.city) city.value = fetched.city
     if (fetched.postal_code) postalCode.value = fetched.postal_code
     if (fetched.country) country.value = fetched.country
+    if (fetched.shipping_method) shippingMethod.value = fetched.shipping_method
+    // Contact fields — order takes precedence (revisit), then fall back
+    // to the user's account values for first-time fill.
+    shippingPhone.value = fetched.shipping_phone || authStore.user?.phone_number || ''
+    shippingEmail.value = fetched.shipping_email || authStore.user?.email || ''
 
     // If the order is already past 'placed', send the customer to confirmation
     if (
@@ -210,6 +275,9 @@ async function onPay() {
         city: city.value,
         postal_code: postalCode.value,
         country: country.value.toUpperCase(),
+        shipping_phone: shippingPhone.value,
+        shipping_email: shippingEmail.value,
+        shipping_method: shippingMethod.value,
       })
 
       // 2. Transition draft → placed (validates required fields server-side,
@@ -281,6 +349,37 @@ function onBack() {
   }
 }
 
+/**
+ * Re-quote when the customer picks a different shipping speed. Quote
+ * is server-driven (same /quote/ endpoint loadOrder uses), so the
+ * displayed total reflects the authoritative multiplier the backend
+ * will apply at place_order time. No debounce — radio clicks are
+ * discrete, not slider drags.
+ */
+watch(shippingMethod, async (method) => {
+  if (!order.value || order.value.kind === 'catalog') return
+  if (!order.value.material) return
+  try {
+    const q = await ordersService.quote({
+      material: order.value.material,
+      width_mm: order.value.width_mm,
+      height_mm: order.value.height_mm,
+      quantity: order.value.quantity,
+      with_relief: order.value.with_relief,
+      with_tinta_blanca: order.value.with_tinta_blanca,
+      with_barniz_brillo: order.value.with_barniz_brillo,
+      with_barniz_opaco: order.value.with_barniz_opaco,
+      shipping_method: method,
+    })
+    quotedTotalEur.value = q.total_eur
+    quotedSubtotalEur.value = q.subtotal_eur
+    quotedIvaEur.value = q.iva_eur
+  } catch {
+    // Silent — the existing quote stays visible. place_order will
+    // compute correctly regardless.
+  }
+})
+
 onMounted(loadOrder)
 </script>
 
@@ -305,6 +404,47 @@ onMounted(loadOrder)
     >
       <!-- LEFT: shipping form OR Stripe handoff -->
       <div class="flex flex-col gap-8">
+        <!-- Shipping method radio — sticker orders only (catalog orders
+             don't run through the editor / sticker pricing, so they
+             ship at the default 'normal' speed for now). -->
+        <fieldset
+          v-if="!clientSecret && !isCatalogOrder"
+          class="flex flex-col gap-3"
+        >
+          <legend class="text-h3 font-bold text-text">
+            Envío
+          </legend>
+          <p class="text-sm text-text-muted">
+            La velocidad del envío suma un porcentaje al total.
+          </p>
+          <div class="flex flex-col gap-2">
+            <label
+              v-for="method in SHIPPING_OPTIONS"
+              :key="method"
+              class="flex cursor-pointer items-center gap-3 rounded-md border border-border bg-surface-2 px-4 py-3"
+            >
+              <input
+                v-model="shippingMethod"
+                type="radio"
+                :value="method"
+                class="size-4 accent-primary"
+                :data-testid="`shipping-method-${method}`"
+              >
+              <div class="flex-1">
+                <p class="text-sm font-semibold text-text">
+                  {{ SHIPPING_METHOD_LABELS[method] }}
+                </p>
+                <p class="text-xs text-text-muted">
+                  Llega en {{ SHIPPING_METHOD_ETA[method] }}.
+                </p>
+              </div>
+              <span class="text-sm text-text-muted">
+                {{ SHIPPING_METHOD_SURCHARGE_LABEL[method] || 'Gratis' }}
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
         <!-- Shipping form: visible until checkout succeeds -->
         <ShippingForm
           v-if="!clientSecret"
@@ -314,12 +454,16 @@ onMounted(loadOrder)
           :city="city"
           :postal-code="postalCode"
           :country="country"
+          :shipping-phone="shippingPhone"
+          :shipping-email="shippingEmail"
           @update:recipient-name="recipientName = $event"
           @update:street-line1="streetLine1 = $event"
           @update:street-line2="streetLine2 = $event"
           @update:city="city = $event"
           @update:postal-code="postalCode = $event"
           @update:country="country = $event"
+          @update:shipping-phone="shippingPhone = $event"
+          @update:shipping-email="shippingEmail = $event"
         />
 
         <!-- Stripe Elements placeholder. Replaced by <PaymentElement> when
@@ -412,7 +556,10 @@ onMounted(loadOrder)
           :with-tinta-blanca="order.with_tinta_blanca"
           :with-barniz-brillo="order.with_barniz_brillo"
           :with-barniz-opaco="order.with_barniz_opaco"
+          :shipping-method="shippingMethod"
           :total-eur="totalEur"
+          :subtotal-eur="subtotalEur"
+          :iva-eur="ivaEur"
           :thumbnail-url="thumbnailUrl"
           :cta-loading="false"
           @continue="onPay"

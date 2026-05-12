@@ -21,9 +21,16 @@ const quantity = ref<number>(1)
 
 const slug = computed(() => route.params.slug as string)
 
+/**
+ * All-in total with 21% IVA. price_cents stored on Product is pre-IVA
+ * (matches backend _compute_catalog_total_cents), so the customer-facing
+ * "Total" line multiplies by 1.21 to reflect what they'll actually pay
+ * — Spanish B2C convention.
+ */
 const totalEur = computed(() => {
   if (!product.value) return ''
-  return ((product.value.price_cents * quantity.value) / 100).toFixed(2)
+  const allInCents = Math.round(product.value.price_cents * quantity.value * 1.21)
+  return (allInCents / 100).toFixed(2)
 })
 
 const canBuy = computed(() => {

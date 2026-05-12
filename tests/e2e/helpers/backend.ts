@@ -71,7 +71,7 @@ export function seedActiveCustomer(
     'import django; django.setup()',
     'from apps.users.models import User',
     'from allauth.account.models import EmailAddress',
-    `u = User.objects.create_user(email='${email}', password='${password}', role='customer', is_active=True, is_verified=True, first_name='${firstName}', last_name='${lastName}')`,
+    `u = User.objects.create_user(email='${email}', password='${password}', role='customer', is_active=True, is_verified=True, first_name='${firstName}', last_name='${lastName}', phone_number='+34 600 000 000')`,
     `EmailAddress.objects.create(user=u, email='${email}', verified=True, primary=True)`,
   ].join('; ')
 
@@ -233,6 +233,10 @@ export function seedOrderForCustomer(
       "recipient_name='Test Recipient',",
       "street_line_1='Carrer 1',",
       "city='Barcelona', postal_code='08001', country='ES',",
+      // shipping_phone is required at place_order — fill it so tests
+      // that exercise the placed-or-beyond states don't trip the
+      // place_order guard.
+      "shipping_phone='+34 600 123 456',",
       ')',
     ].join(' '),
     'print(o.uuid)',

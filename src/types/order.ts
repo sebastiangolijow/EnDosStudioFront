@@ -55,6 +55,32 @@ export const SHAPE_LABELS: Record<Shape, string> = {
   redondeadas: 'Esquinas redondeadas',
 }
 
+/** Shipping speed enum — mirrors the backend's SHIPPING_METHOD_CHOICES.
+ *  Stacks as a multiplicative surcharge on the order total (express +20%,
+ *  flash +60%, normal +0%). */
+export type ShippingMethod = 'normal' | 'express' | 'flash'
+
+export const SHIPPING_METHOD_LABELS: Record<ShippingMethod, string> = {
+  normal: 'Envío normal',
+  express: 'Envío express',
+  flash: 'Envío flash',
+}
+
+export const SHIPPING_METHOD_ETA: Record<ShippingMethod, string> = {
+  normal: '7-10 días',
+  express: '2-3 días',
+  flash: '1 día',
+}
+
+/** Surcharge percent string for UI display ("+20%" etc.). Matches the
+ *  multiplier the backend uses; rendering only — pricing math always
+ *  runs server-side via /quote/ or place_order. */
+export const SHIPPING_METHOD_SURCHARGE_LABEL: Record<ShippingMethod, string> = {
+  normal: '',
+  express: '+20%',
+  flash: '+60%',
+}
+
 export const STATUS_LABELS: Record<OrderStatus, string> = {
   draft: 'Borrador',
   placed: 'Realizado',
@@ -134,6 +160,9 @@ export interface Order {
   city: string
   postal_code: string
   country: string
+  shipping_phone: string
+  shipping_email: string
+  shipping_method: ShippingMethod
 
   // Customer (read-only, populated by the backend serializer for the
   // admin orders screen). Empty strings when created_by is null
@@ -141,9 +170,15 @@ export interface Order {
   customer_email: string
   customer_name: string
 
-  // Money
+  // Money — all-in figures include 21% IVA. Subtotal/IVA broken out
+  // so the frontend can render the Spanish-convention breakdown
+  // without re-doing the math.
   total_amount_cents: number
   total_eur: string // pre-formatted "110.00" — for display
+  subtotal_cents: number
+  subtotal_eur: string
+  iva_cents: number
+  iva_eur: string
   currency: string
 
   // Stripe
@@ -189,6 +224,9 @@ export interface OrderUpdatePayload {
   city?: string
   postal_code?: string
   country?: string
+  shipping_phone?: string
+  shipping_email?: string
+  shipping_method?: ShippingMethod
 }
 
 /** POST /orders/ payload — minimal. */
@@ -225,11 +263,16 @@ export interface PriceQuoteRequest {
   with_tinta_blanca?: boolean
   with_barniz_brillo?: boolean
   with_barniz_opaco?: boolean
+  shipping_method?: ShippingMethod
 }
 
 export interface PriceQuoteResponse {
   total_amount_cents: number
   total_eur: string
+  subtotal_cents: number
+  subtotal_eur: string
+  iva_cents: number
+  iva_eur: string
   currency: string
 }
 

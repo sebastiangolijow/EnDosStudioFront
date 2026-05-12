@@ -91,7 +91,9 @@ async function fillShipping(page: Page) {
   await page.getByLabel('Dirección', { exact: false }).first().fill('Carrer Test 1')
   await page.getByLabel('Ciudad').fill('Barcelona')
   await page.getByLabel('Código postal').fill('08001')
-  await page.getByLabel('País').fill('ES')
+  // País is a <select> defaulted to ES — no fill needed. Phone is now
+  // required for formIsValid → Pagar to enable.
+  await page.getByLabel('Teléfono de contacto').fill('+34 600 123 456')
 }
 
 test.describe('checkout', () => {

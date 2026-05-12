@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { type Material, MATERIAL_LABELS } from '@/types/order'
+import {
+  type Material,
+  MATERIAL_LABELS,
+  type ShippingMethod,
+  SHIPPING_METHOD_LABELS,
+  SHIPPING_METHOD_SURCHARGE_LABEL,
+} from '@/types/order'
 import AppButton from '@/components/ui/AppButton.vue'
 
 interface Props {
@@ -13,8 +19,20 @@ interface Props {
   withTintaBlanca: boolean
   withBarnizBrillo: boolean
   withBarnizOpaco: boolean
-  /** Pre-formatted EUR string from /orders/quote/. Empty = quote pending. */
+  /** Optional — when present, the summary shows the selected shipping
+   *  speed + surcharge in the Envío line. Defaults to 'normal' which
+   *  renders as the original "Gratis" treatment so callers that haven't
+   *  yet added the field (OrderConfigView; pre-shipping demos) keep
+   *  rendering correctly. */
+  shippingMethod?: ShippingMethod
+  /** Pre-formatted EUR string from /orders/quote/. Empty = quote pending.
+   *  All-in (includes 21% IVA). */
   totalEur: string
+  /** Pre-IVA subtotal (work × addons × shipping). Spanish B2C convention
+   *  shows it as a line above IVA. Empty when the quote hasn't returned yet. */
+  subtotalEur?: string
+  /** 21% IVA on the subtotal. Empty when the quote hasn't returned yet. */
+  ivaEur?: string
   /** Original-image URL from the order's files. Optional placeholder. */
   thumbnailUrl?: string | null
   isQuoting?: boolean
@@ -26,6 +44,9 @@ const props = withDefaults(defineProps<Props>(), {
   thumbnailUrl: null,
   isQuoting: false,
   ctaLoading: false,
+  shippingMethod: 'normal',
+  subtotalEur: '',
+  ivaEur: '',
 })
 
 defineEmits<{
@@ -137,17 +158,36 @@ const ctaDisabled = computed(
       </div>
     </dl>
 
-    <!-- Total -->
+    <!-- Total — Spanish B2C: subtotal pre-IVA + Envío + IVA(21%) + all-in Total. -->
     <div class="mt-4 flex flex-col gap-2 border-t border-border pt-4 text-sm">
       <div class="flex justify-between text-text-muted">
         <span>Subtotal</span>
         <span data-testid="summary-subtotal">
-          {{ totalEur ? `€${totalEur}` : '—' }}
+          {{ subtotalEur ? `€${subtotalEur}` : (totalEur ? `€${totalEur}` : '—') }}
         </span>
       </div>
+      <!-- Envío line — for 'normal' shipping show "Gratis" green treatment
+           (no surcharge). For express / flash show method + percent. -->
       <div class="flex justify-between text-text-muted">
         <span>Envío</span>
-        <span class="text-success">Gratis</span>
+        <span
+          v-if="shippingMethod === 'normal'"
+          class="text-success"
+        >Gratis</span>
+        <span
+          v-else
+          data-testid="summary-shipping"
+        >
+          {{ SHIPPING_METHOD_LABELS[shippingMethod] }}
+          <span class="text-text-muted">{{ SHIPPING_METHOD_SURCHARGE_LABEL[shippingMethod] }}</span>
+        </span>
+      </div>
+      <div
+        v-if="ivaEur"
+        class="flex justify-between text-text-muted"
+      >
+        <span>IVA (21%)</span>
+        <span data-testid="summary-iva">€{{ ivaEur }}</span>
       </div>
       <div class="mt-2 flex items-baseline justify-between border-t border-border pt-3">
         <span class="font-semibold text-text">Total</span>

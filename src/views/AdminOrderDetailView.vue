@@ -405,6 +405,32 @@ const canCancel = computed(
                 {{ line }}
               </p>
             </address>
+            <!-- Per-shipment contact — phone is required at place_order,
+                 email is optional. Both can differ from the customer's
+                 account info (gift orders, alt notification address).
+                 Phone is a clickable tel: link so the shop owner can
+                 ring the customer about pickup. -->
+            <div
+              v-if="order.shipping_phone || order.shipping_email"
+              class="mt-3 flex flex-col gap-1 border-t border-border pt-3 text-sm"
+            >
+              <a
+                v-if="order.shipping_phone"
+                :href="`tel:${order.shipping_phone}`"
+                class="text-primary hover:underline"
+                data-testid="admin-order-shipping-phone"
+              >
+                📞 {{ order.shipping_phone }}
+              </a>
+              <a
+                v-if="order.shipping_email"
+                :href="`mailto:${order.shipping_email}`"
+                class="break-all text-primary hover:underline"
+                data-testid="admin-order-shipping-email"
+              >
+                ✉️ {{ order.shipping_email }}
+              </a>
+            </div>
           </section>
 
           <!-- Total -->

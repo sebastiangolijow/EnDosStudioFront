@@ -29,6 +29,13 @@ const lineSubtotalEur = computed(() => {
   return ((props.product.price_cents * props.productQuantity) / 100).toFixed(2)
 })
 
+/** 21% IVA on the pre-IVA line subtotal — Spanish B2C convention. */
+const ivaEur = computed(() => {
+  if (!props.product) return ''
+  const ivaCents = Math.round(props.product.price_cents * props.productQuantity * 0.21)
+  return (ivaCents / 100).toFixed(2)
+})
+
 const productName = computed(() => props.product?.name ?? '—')
 const unitPriceEur = computed(() => props.product?.price_eur ?? '')
 </script>
@@ -104,6 +111,13 @@ const unitPriceEur = computed(() => props.product?.price_eur ?? '')
       <div class="flex justify-between text-text-muted">
         <span>Envío</span>
         <span class="text-success">Gratis</span>
+      </div>
+      <div
+        v-if="ivaEur"
+        class="flex justify-between text-text-muted"
+      >
+        <span>IVA (21%)</span>
+        <span data-testid="catalog-summary-iva">€{{ ivaEur }}</span>
       </div>
       <div class="mt-2 flex items-baseline justify-between border-t border-border pt-3">
         <span class="font-semibold text-text">Total</span>

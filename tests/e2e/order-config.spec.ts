@@ -105,8 +105,9 @@ test.describe('order config', () => {
     // (desktop + mobile via responsive show/hide); .first() picks one.
     await expect(page.getByText('Material y tamaño').first()).toBeVisible()
 
-    // Seeded order: vinilo_blanco 10×10 cm q=100 → 5951.25 cents ≈ 59.51€
-    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, {
+    // Seeded order: vinilo_blanco 10×10 cm q=100 → 5951 pre-IVA cents
+    // → ×1.21 = 7201 cents all-in (≈ 72.01€).
+    await expect(page.getByTestId('summary-total')).toHaveText(/72\.01/, {
       timeout: 5_000,
     })
 
@@ -127,20 +128,23 @@ test.describe('order config', () => {
 
     await page.goto(`/order-config/${draftUuid}`)
 
-    // Seeded order at vinilo_blanco 10×10 q=100 → 59.51€ baseline.
-    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, {
+    // Seeded order at vinilo_blanco 10×10 q=100 → 72.01€ all-in (5951
+    // pre-IVA × 1.21).
+    await expect(page.getByTestId('summary-total')).toHaveText(/72\.01/, {
       timeout: 5_000,
     })
 
-    // Pick barniz brillo (+20%): 59.51 × 1.20 = 71.42
+    // Pick barniz brillo (+20%): pre-IVA 5951 × 1.20 = 7142;
+    // ×1.21 = 8642 → 86.42€.
     await page.getByTestId('acabado-brillo').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/71\.42/, {
+    await expect(page.getByTestId('summary-total')).toHaveText(/86\.42/, {
       timeout: 5_000,
     })
 
-    // Pick relieve (+35%): radio replaces brillo. Total = 59.51 × 1.35 = 80.34
+    // Pick relieve (+35%): radio replaces brillo. Pre-IVA 5951 × 1.35 =
+    // 8034; ×1.21 = 9721 → 97.21€.
     await page.getByTestId('acabado-relieve').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/80\.34/, {
+    await expect(page.getByTestId('summary-total')).toHaveText(/97\.21/, {
       timeout: 5_000,
     })
 
@@ -149,7 +153,7 @@ test.describe('order config', () => {
 
     // Switch back to "Sin acabado" → drops to baseline.
     await page.getByTestId('acabado-none').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/59\.51/, {
+    await expect(page.getByTestId('summary-total')).toHaveText(/72\.01/, {
       timeout: 5_000,
     })
     // Relief-note input is hidden again.
@@ -166,16 +170,26 @@ test.describe('order config', () => {
 
     await page.goto(`/order-config/${draftUuid}`)
 
-    // Pick tinta blanca alone (+35%): 59.51 × 1.35 = 80.34
-    await page.getByTestId('addon-tinta-blanca').click()
-    await expect(page.getByTestId('summary-total')).toHaveText(/80\.34/, {
-      timeout: 5_000,
+    // Wait for the initial quote to land so the baseline 72.01 is in
+    // place before we toggle add-ons. Avoids a race where clicking
+    // tinta-blanca before the first quote arrives leaves the summary
+    // showing '—' indefinitely (the debounce coalesces both requests).
+    await expect(page.getByTestId('summary-total')).toHaveText(/72\.01/, {
+      timeout: 10_000,
     })
 
-    // Add barniz brillo on top (+20%): combined multiplier 1.55 → 92.24
+    // Pick tinta blanca alone (+35%): pre-IVA 5951 × 1.35 = 8034;
+    // ×1.21 = 9721 → 97.21€.
+    await page.getByTestId('addon-tinta-blanca').click()
+    await expect(page.getByTestId('summary-total')).toHaveText(/97\.21/, {
+      timeout: 10_000,
+    })
+
+    // Add barniz brillo on top (+20%): combined multiplier 1.55.
+    // Pre-IVA 5951 × 1.55 = 9224; ×1.21 = 11161 → 111.61€.
     await page.getByTestId('acabado-brillo').check()
-    await expect(page.getByTestId('summary-total')).toHaveText(/92\.24/, {
-      timeout: 5_000,
+    await expect(page.getByTestId('summary-total')).toHaveText(/111\.61/, {
+      timeout: 10_000,
     })
   })
 
@@ -187,7 +201,7 @@ test.describe('order config', () => {
 
     await page.goto(`/order-config/${draftUuid}`)
 
-    await page.getByTestId('acabado-opaco').check()
+    await page.getByTestId('acabado-opaco').click()
     await expect(page.getByTestId('summary-continue')).toBeEnabled({
       timeout: 5_000,
     })

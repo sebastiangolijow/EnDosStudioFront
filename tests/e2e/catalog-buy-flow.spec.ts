@@ -65,10 +65,10 @@ test.describe('catalog buy flow', () => {
     await page.goto(`/catalogo/${product.slug}`)
     await expect(page.getByTestId('product-detail')).toBeVisible()
 
-    // Bump qty to 2 (15 × 2 = 30 €)
+    // Bump qty to 2. 1500 × 2 × 1.21 = 3630 → €36.30 all-in (IVA).
     await page.getByTestId('qty-increase').click()
     await expect(page.getByTestId('qty-value')).toHaveText('2')
-    await expect(page.getByTestId('product-total')).toHaveText('€30.00')
+    await expect(page.getByTestId('product-total')).toHaveText('€36.30')
 
     // Comprar → creates a catalog order, routes to /checkout/{uuid}
     await page.getByTestId('product-buy').click()
@@ -76,7 +76,7 @@ test.describe('catalog buy flow', () => {
 
     // Right-rail summary uses the catalog component, not the sticker one
     await expect(page.getByTestId('catalog-order-summary')).toBeVisible()
-    await expect(page.getByTestId('catalog-summary-total')).toContainText('30.00')
+    await expect(page.getByTestId('catalog-summary-total')).toContainText('36.30')
     await expect(page.getByText('Llavero Buy Flow')).toBeVisible()
 
     // Fill shipping
@@ -108,7 +108,8 @@ test.describe('catalog buy flow', () => {
     expect(order.kind).toBe('catalog')
     expect(order.status).toBe('placed')
     expect(order.product_quantity).toBe(2)
-    expect(order.total_amount_cents).toBe(3000) // 1500 × 2
+    // 1500 × 2 = 3000 pre-IVA; ×1.21 = 3630 all-in.
+    expect(order.total_amount_cents).toBe(3630)
     expect(order.recipient_name).toBe('Test Buyer')
   })
 
@@ -129,7 +130,8 @@ test.describe('catalog buy flow', () => {
     expect(createRes.status()).toBe(201)
     const created = await createRes.json()
 
-    // PATCH shipping + place
+    // PATCH shipping + place. shipping_phone is required at place_order
+    // since M2-late; without it the backend 409s with detail=shipping_phone.
     await page.request.patch(`http://localhost:8000/api/v1/orders/${created.uuid}/`, {
       headers: { Authorization: `Bearer ${access}` },
       data: {
@@ -138,6 +140,7 @@ test.describe('catalog buy flow', () => {
         city: 'Barcelona',
         postal_code: '08001',
         country: 'ES',
+        shipping_phone: '+34 600 123 456',
       },
     })
     const placeRes = await page.request.post(
@@ -152,6 +155,7 @@ test.describe('catalog buy flow', () => {
     await expect(card).toBeVisible({ timeout: 10_000 })
     await expect(card).toContainText('Llavero Dashboard')
     await expect(card).toContainText('1 unidad(es)')
-    await expect(card).toContainText('€20.00')
+    // 2000 pre-IVA × 1.21 = 2420 → €24.20 all-in (Spanish B2C convention).
+    await expect(card).toContainText('€24.20')
   })
 })

@@ -109,6 +109,7 @@ test.describe('catalog stock guards', () => {
         city: 'Barcelona',
         postal_code: '08001',
         country: 'ES',
+        shipping_phone: '+34 600 123 456',
       },
     })
     const placeRes = await page.request.post(
