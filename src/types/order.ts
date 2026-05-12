@@ -47,13 +47,15 @@ export const MATERIAL_LABELS: Record<Material, string> = {
  * the other three are geometric primitives sized from width × height.
  * Customers picking anything other than `contorneado` skip the editor.
  */
-export type Shape = 'contorneado' | 'cuadrado' | 'circulo' | 'redondeadas'
+export type Shape
+  = 'contorneado' | 'cuadrado' | 'circulo' | 'redondeadas' | 'oval'
 
 export const SHAPE_LABELS: Record<Shape, string> = {
   contorneado: 'Corte contorneado',
   cuadrado: 'Cuadrado',
   circulo: 'Círculo',
   redondeadas: 'Esquinas redondeadas',
+  oval: 'Óvalo',
 }
 
 /** Shipping speed enum — mirrors the backend's SHIPPING_METHOD_CHOICES.

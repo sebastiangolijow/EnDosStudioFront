@@ -43,7 +43,13 @@ defineEmits<{
   'update:smoothing': [value: number]
 }>()
 
-const SHAPES: Shape[] = ['contorneado', 'cuadrado', 'circulo', 'redondeadas']
+const SHAPES: Shape[] = [
+  'contorneado',
+  'cuadrado',
+  'circulo',
+  'oval',
+  'redondeadas',
+]
 
 /** Margin slider bounds. Contorneado floors at 5 mm (real die-cut
  *  tolerance — below this the artwork would print clipped at the
@@ -157,6 +163,22 @@ const SWATCH_CLASSES: Record<Material, string> = {
             cx="12"
             cy="12"
             r="8"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </svg>
+        <svg
+          v-else-if="s === 'oval'"
+          viewBox="0 0 24 24"
+          class="size-4 shrink-0"
+          aria-hidden="true"
+        >
+          <ellipse
+            cx="12"
+            cy="12"
+            rx="9"
+            ry="5"
             fill="none"
             stroke="currentColor"
             stroke-width="1.5"

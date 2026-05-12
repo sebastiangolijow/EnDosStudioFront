@@ -187,6 +187,30 @@ function geometricMaskPoints(
     }
     return points
   }
+  if (s === 'oval') {
+    // Wide oval — fixed 2:1 horizontal aspect regardless of source
+    // image dimensions. Reads as a deliberate "ID badge" / "racetrack"
+    // shape that's visually distinct from circulo (which fits to the
+    // image's natural aspect). Sized to the LONGER edge of the image
+    // so it sits within the customer's design like a frame.
+    const longEdge = Math.max(imgWidth, imgHeight)
+    // Half-axes in image-natural pixels, then add the margin.
+    const baseRx = longEdge / 2
+    const baseRy = baseRx / 2  // 2:1 aspect
+    const rx = baseRx + m
+    const ry = baseRy + m
+    // Center on the image's bounding box, not the margin-expanded one
+    // — the oval should look anchored to the artwork.
+    const cx = imgWidth / 2
+    const cy = imgHeight / 2
+    const N = 64
+    const points: { kind: 'image'; x: number; y: number }[] = []
+    for (let i = 0; i < N; i++) {
+      const t = (i / N) * 2 * Math.PI
+      points.push({ kind: 'image', x: cx + Math.cos(t) * rx, y: cy + Math.sin(t) * ry })
+    }
+    return points
+  }
   // redondeadas — 4 quarter-circle corners. Corner radius = 10% of the
   // shorter edge of the EXPANDED bbox so the rounding looks proportional.
   const r = Math.min(w, h) * 0.1
