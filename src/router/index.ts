@@ -155,8 +155,14 @@ router.beforeEach((to) => {
     return { name: 'home' }
   }
 
+  // Staff shouldn't see the customer "Mis pedidos" view — they don't
+  // place customer orders. Bounce them to the admin orders screen.
+  if (to.name === 'dashboard' && auth.isShopStaff) {
+    return { name: 'admin-orders' }
+  }
+
   if ((to.name === 'login' || to.name === 'register') && auth.isAuthenticated) {
-    return { name: 'dashboard' }
+    return { name: auth.isShopStaff ? 'admin-orders' : 'dashboard' }
   }
 
   return true

@@ -35,7 +35,17 @@ const totalEur = computed(() => {
   return (allInCents / 100).toFixed(2)
 })
 
+/**
+ * Staff (admin / shop_staff) browse the catalog as a QA / preview
+ * tool but shouldn't be able to actually purchase — their account
+ * isn't a customer account. We disable Comprar instead of hiding
+ * the whole product so staff can still see the discounted price and
+ * the buy CTA copy.
+ */
+const isStaff = computed(() => auth.isShopStaff)
+
 const canBuy = computed(() => {
+  if (isStaff.value) return false
   return (
     !!product.value &&
     product.value.is_active &&
@@ -228,7 +238,10 @@ onMounted(load)
           </span>
         </div>
 
-        <!-- CTA -->
+        <!-- CTA — disabled for staff (they can't be customers). The
+             button stays visible so the page layout matches what
+             customers see, but a helper line under it explains why
+             it's greyed out. -->
         <AppButton
           size="lg"
           :loading="buyStatus === 'loading'"
@@ -238,6 +251,13 @@ onMounted(load)
         >
           Comprar
         </AppButton>
+        <p
+          v-if="isStaff"
+          class="text-center text-xs text-text-muted"
+          data-testid="product-buy-staff-notice"
+        >
+          Las cuentas de administración no pueden comprar productos del catálogo.
+        </p>
       </div>
     </div>
   </section>

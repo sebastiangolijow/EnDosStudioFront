@@ -31,7 +31,12 @@ export function useAuth() {
       const user = await authService.me()
       auth.setUser(user)
       status.value = 'success'
-      const next = (router.currentRoute.value.query.next as string) || '/dashboard'
+      // Staff (admin / shop_staff) land on the admin orders board;
+      // customers go to the dashboard "Mis pedidos" view. A ?next=
+      // query string from the login redirect still wins so deep links
+      // survive the round-trip.
+      const fallback = auth.isShopStaff ? '/admin/orders' : '/dashboard'
+      const next = (router.currentRoute.value.query.next as string) || fallback
       router.push(next)
     } catch (e) {
       status.value = 'error'

@@ -68,12 +68,16 @@ const navLinks = computed(() => [
           <!-- "Mi cuenta" hidden on mobile; logged-in customers can reach
                the dashboard via the logo or a future hamburger menu. The
                Salir button stays visible so anyone can log out from any
-               screen. -->
+               screen.
+
+               Staff (admin / shop_staff) see "Panel admin" → /admin/orders
+               instead. They don't have a customer "Mis pedidos" view —
+               they're not buying. -->
           <RouterLink
-            to="/dashboard"
+            :to="auth.isShopStaff ? '/admin/orders' : '/dashboard'"
             class="hidden text-base font-medium text-text-muted hover:text-text md:inline"
           >
-            Mi cuenta
+            {{ auth.isShopStaff ? 'Panel admin' : 'Mi cuenta' }}
           </RouterLink>
           <AppButton
             variant="ghost"
