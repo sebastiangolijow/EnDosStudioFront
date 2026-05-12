@@ -37,6 +37,7 @@ const adminLinks: NavLink[] = [
   { to: '/admin/orders', label: 'Pedidos (admin)', icon: '📋' },
   { to: '/admin/products', label: 'Productos', icon: '🛍️' },
   { to: '/admin/users', label: 'Usuarios', icon: '👥' },
+  { to: '/admin/discounts', label: 'Descuentos', icon: '🎟️' },
 ]
 
 // Visible to both admin and shop_staff — same set the backend uses for

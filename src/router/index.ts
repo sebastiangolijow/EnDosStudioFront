@@ -126,6 +126,15 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresStaff: true },
   },
 
+  // Promo code management. Staff create / disable discount codes
+  // customers redeem at checkout.
+  {
+    path: '/admin/discounts',
+    name: 'admin-discounts',
+    component: () => import('@/views/AdminDiscountsView.vue'),
+    meta: { requiresAuth: true, requiresStaff: true },
+  },
+
   // --- Catch-all ---
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

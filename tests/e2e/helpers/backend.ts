@@ -221,6 +221,29 @@ export function seedShopStaff(): SeededCustomer {
   return { email, password }
 }
 
+/** Seed a Discount row directly. Used by the checkout-discount spec
+ *  so the customer flow has a known code to redeem. The matching
+ *  cleanup happens in cleanupSeededUsers (we batch-delete codes
+ *  starting with the test-prefix). */
+export function seedDiscount(opts: {
+  code: string
+  percent_off: number
+  is_enabled?: boolean
+}): { uuid: string; code: string } {
+  const enabled = opts.is_enabled ?? true
+  const upper = opts.code.toUpperCase()
+  const cmd = [
+    "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
+    'import django; django.setup()',
+    'from apps.discounts.models import Discount',
+    `d, _ = Discount.objects.update_or_create(code='${upper}', defaults={'percent_off': ${opts.percent_off}, 'is_enabled': ${enabled ? 'True' : 'False'}})`,
+    'print(d.uuid)',
+  ].join('; ')
+  const uuid = runInBackendShell(cmd).trim()
+  seededDiscountsInThisFile.push(uuid)
+  return { uuid, code: upper }
+}
+
 /** Create a single draft order (status='draft') for an existing customer. Returns the UUID. */
 export function seedDraftForCustomer(customer: SeededCustomer): string {
   const code = [
@@ -295,6 +318,7 @@ const seededProductsInThisFile: string[] = []
  *  catalog-admin-create.spec.ts uses this — when the test fills the
  *  admin form, only the slug is observable client-side. */
 const seededProductSlugsInThisFile: string[] = []
+const seededDiscountsInThisFile: string[] = []
 
 /** Register a product slug for afterAll cleanup. Use from specs that
  *  create products through the UI (where the seedProduct helper +
@@ -367,6 +391,18 @@ for d in dirs:
     ].join('; ')
     runInBackendShell(code)
     seededInThisFile.length = 0
+  }
+
+  if (seededDiscountsInThisFile.length > 0) {
+    const idList = seededDiscountsInThisFile.map((u) => `'${u}'`).join(',')
+    const code = [
+      "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')",
+      'import django; django.setup()',
+      'from apps.discounts.models import Discount',
+      `Discount.objects.filter(uuid__in=[${idList}]).delete()`,
+    ].join('; ')
+    runInBackendShell(code)
+    seededDiscountsInThisFile.length = 0
   }
 }
 

@@ -148,6 +148,20 @@ export const ordersService = {
     return response.data
   },
 
+  /** Customer-only. Apply a promo code to a draft order. Backend
+   *  uppercases the code, validates is_enabled, recomputes the total
+   *  with the discount applied (before IVA), and returns the updated
+   *  order. Throws on:
+   *    - 404 'not_found'    → no Discount row matches
+   *    - 409 'disabled'     → code exists but is_enabled=false
+   *    - 409 'wrong_status' → order is no longer a draft
+   *  Callers should narrow on the response status + detail string
+   *  to render a useful error message to the customer. */
+  async applyDiscount(uuid: string, code: string): Promise<Order> {
+    const response = await api.post(`/orders/${uuid}/apply-discount/`, { code })
+    return response.data
+  },
+
   /** Staff-only. Force any status → any status, bypassing the usual
    *  transition guards. When transitioning to 'shipped' with
    *  shipping_tracking_code set, the backend also sends a notification

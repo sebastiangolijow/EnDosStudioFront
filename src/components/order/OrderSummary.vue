@@ -33,6 +33,11 @@ interface Props {
   subtotalEur?: string
   /** 21% IVA on the subtotal. Empty when the quote hasn't returned yet. */
   ivaEur?: string
+  /** Discount applied to this order, in EUR. When present + non-zero
+   *  (i.e. discountCode is set), the summary inserts a "Descuento"
+   *  line between Envío and IVA. */
+  discountCode?: string
+  discountEur?: string
   /** Original-image URL from the order's files. Optional placeholder. */
   thumbnailUrl?: string | null
   isQuoting?: boolean
@@ -47,6 +52,8 @@ const props = withDefaults(defineProps<Props>(), {
   shippingMethod: 'normal',
   subtotalEur: '',
   ivaEur: '',
+  discountCode: '',
+  discountEur: '',
 })
 
 defineEmits<{
@@ -181,6 +188,17 @@ const ctaDisabled = computed(
           {{ SHIPPING_METHOD_LABELS[shippingMethod] }}
           <span class="text-text-muted">{{ SHIPPING_METHOD_SURCHARGE_LABEL[shippingMethod] }}</span>
         </span>
+      </div>
+      <!-- Discount line — only shown when a code is actively applied
+           to the order. Negative amount (subtracted from the subtotal
+           in the math; rendered with a leading minus for readability). -->
+      <div
+        v-if="discountCode && discountEur"
+        class="flex justify-between text-success"
+        data-testid="summary-discount"
+      >
+        <span>Descuento ({{ discountCode }})</span>
+        <span>−€{{ discountEur }}</span>
       </div>
       <div
         v-if="ivaEur"

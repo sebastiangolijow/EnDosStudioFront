@@ -184,10 +184,20 @@ export interface Order {
   // without re-doing the math.
   total_amount_cents: number
   total_eur: string // pre-formatted "110.00" — for display
+  // Pre-DISCOUNT, pre-IVA work amount. The summary card reads as
+  // 'subtotal − discount + IVA = total' so this field is the
+  // "original work price" before any promo code was applied.
   subtotal_cents: number
   subtotal_eur: string
   iva_cents: number
   iva_eur: string
+  // Promo code applied at checkout. discount_code is the uppercase
+  // text (audit trail; survives even if the Discount row is later
+  // deleted). discount_cents is integer cents subtracted from the
+  // pre-IVA work amount. Zero when no code has been applied.
+  discount_code: string
+  discount_cents: number
+  discount_eur: string
   currency: string
 
   // Stripe

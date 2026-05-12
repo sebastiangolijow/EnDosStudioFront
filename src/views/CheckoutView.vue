@@ -116,6 +116,41 @@ const canReserve = computed<boolean>(() => !!authStore.user?.can_reserve_orders)
 const paymentIntentId = ref<string | null>(null)
 const stripeError = ref<string | null>(null)
 
+// Discount code state. The customer types into discountInput; clicking
+// Aplicar fires ordersService.applyDiscount which validates + recomputes
+// the order. order.value gets replaced with the updated payload so the
+// OrderSummary re-renders with the new total automatically. Errors
+// translate to toast messages keyed on the backend's detail string.
+const discountInput = ref<string>('')
+const isApplyingDiscount = ref<boolean>(false)
+async function onApplyDiscount() {
+  if (!orderUuid.value) return
+  const code = discountInput.value.trim()
+  if (!code) return
+  isApplyingDiscount.value = true
+  try {
+    const updated = await ordersService.applyDiscount(orderUuid.value, code)
+    order.value = updated
+    discountInput.value = ''
+    toast.success(`Código ${updated.discount_code} aplicado.`)
+  } catch (e) {
+    const status = (e as { response?: { status?: number } }).response?.status
+    const detail
+      = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+    if (status === 404) {
+      toast.error('Código no encontrado.')
+    } else if (status === 409 && detail === 'disabled') {
+      toast.error('Ese código ya no está activo.')
+    } else if (status === 409 && detail === 'wrong_status') {
+      toast.error('No se puede aplicar un código a este pedido.')
+    } else {
+      toast.error('No pudimos aplicar el código. Probá de nuevo.')
+    }
+  } finally {
+    isApplyingDiscount.value = false
+  }
+}
+
 const thumbnailUrl = computed<string | null>(() => {
   if (!order.value) return null
   // Prefer the editor's composite snapshot (artwork + halo + FX as
@@ -571,6 +606,64 @@ onMounted(loadOrder)
           @update:shipping-email="shippingEmail = $event"
         />
 
+        <!-- Discount code — apply a promo before payment. Disabled
+             once we've moved past the draft state (the apply-discount
+             endpoint rejects with 409 wrong_status; we hide it here
+             so the customer doesn't try). -->
+        <AppCard
+          v-if="!clientSecret && order && order.status === 'draft'"
+          data-testid="checkout-discount-card"
+        >
+          <h2 class="text-h3 font-semibold text-text">
+            ¿Tenés un código de descuento?
+          </h2>
+          <p class="mt-1 text-sm text-text-muted">
+            Ingresá el código y se aplicará al total antes del IVA.
+          </p>
+
+          <!-- When the customer already applied one, show the current
+               state with a "Quitar" affordance via re-applying an
+               empty code — actually simpler: hide the input and show
+               a "Aplicado" pill. Borrar requires a backend endpoint
+               we don't have yet (out of scope for this iteration —
+               the customer can refresh the page to re-edit). -->
+          <div
+            v-if="order.discount_code"
+            class="mt-3 flex items-center gap-3 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success"
+            data-testid="checkout-discount-applied"
+          >
+            <span>
+              ✓ Código <strong>{{ order.discount_code }}</strong> aplicado
+              (−€{{ order.discount_eur }})
+            </span>
+          </div>
+
+          <div
+            v-else
+            class="mt-3 flex flex-wrap items-end gap-2"
+          >
+            <div class="flex-1 min-w-[180px]">
+              <input
+                v-model="discountInput"
+                type="text"
+                placeholder="WELCOME10"
+                autocapitalize="characters"
+                data-testid="checkout-discount-input"
+                class="w-full rounded-md border border-border bg-surface-2 px-3 py-2.5 text-sm uppercase text-text placeholder:text-text-muted focus-visible:border-primary focus-visible:outline-none"
+                @keydown.enter.prevent="onApplyDiscount"
+              >
+            </div>
+            <AppButton
+              :loading="isApplyingDiscount"
+              :disabled="!discountInput.trim()"
+              data-testid="checkout-discount-apply"
+              @click="onApplyDiscount"
+            >
+              Aplicar
+            </AppButton>
+          </div>
+        </AppCard>
+
         <!-- Stripe Elements placeholder. Replaced by <PaymentElement> when
              the checkout endpoint returns a real client_secret + we have
              a Stripe.js publishable key in the env. -->
@@ -681,6 +774,8 @@ onMounted(loadOrder)
           :total-eur="totalEur"
           :subtotal-eur="subtotalEur"
           :iva-eur="ivaEur"
+          :discount-code="order.discount_code"
+          :discount-eur="order.discount_eur"
           :thumbnail-url="thumbnailUrl"
           :cta-loading="false"
           @continue="onPay"
