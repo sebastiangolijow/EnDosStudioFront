@@ -292,46 +292,56 @@ const SWATCH_CLASSES: Record<Material, string> = {
       @input="$emit('update:reliefNote', ($event.target as HTMLTextAreaElement).value)"
     />
 
-    <hr class="border-border">
+    <!-- ===== Vista ===== HIDDEN (client request, 2026-05-12).
+         The toggles confused customers — "Línea de corte" looked
+         decorative and "Quitar fondo" sounded like an editing tool
+         when it's really a preview-mode switch. Their underlying
+         state (maskVisible=true default, removeBackground=false
+         default) is what the shop actually wants in the production
+         render anyway, so hiding the controls produces the right
+         outcome without losing functionality. To restore: change
+         v-if="false" → v-if="true". -->
+    <template v-if="false">
+      <hr class="border-border">
 
-    <!-- ===== Vista ===== -->
-    <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
-      Vista
-    </h2>
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-text-muted">
+        Vista
+      </h2>
 
-    <!-- Mask visibility toggle -->
-    <label class="flex items-center justify-between gap-3 cursor-pointer">
-      <span class="text-sm text-text">Línea de corte</span>
-      <input
-        type="checkbox"
-        :checked="maskVisible"
-        class="size-4 accent-primary"
-        data-testid="toggle-mask-visible"
-        @change="$emit('update:maskVisible', ($event.target as HTMLInputElement).checked)"
-      >
-    </label>
+      <!-- Mask visibility toggle -->
+      <label class="flex items-center justify-between gap-3 cursor-pointer">
+        <span class="text-sm text-text">Línea de corte</span>
+        <input
+          type="checkbox"
+          :checked="maskVisible"
+          class="size-4 accent-primary"
+          data-testid="toggle-mask-visible"
+          @change="$emit('update:maskVisible', ($event.target as HTMLInputElement).checked)"
+        >
+      </label>
 
-    <!-- Background-removal toggle: when ON, the base image is clipped
-         to the tight ARTWORK polygon (no bleed), letting the colored
-         halo show in the bleed margin. When OFF, the base image clips
-         to the FULL cut polygon (bleed included) so the customer sees
-         the printed sticker as it'd arrive — full bleed, no halo
-         peek-through. -->
-    <label class="flex items-center justify-between gap-3 cursor-pointer">
-      <span class="text-sm text-text">
-        Quitar fondo
-        <span class="block text-xs text-text-muted">
-          Recorta más cerca del diseño y deja ver el halo del material en el margen.
+      <!-- Background-removal toggle: when ON, the base image is clipped
+           to the tight ARTWORK polygon (no bleed), letting the colored
+           halo show in the bleed margin. When OFF, the base image clips
+           to the FULL cut polygon (bleed included) so the customer sees
+           the printed sticker as it'd arrive — full bleed, no halo
+           peek-through. -->
+      <label class="flex items-center justify-between gap-3 cursor-pointer">
+        <span class="text-sm text-text">
+          Quitar fondo
+          <span class="block text-xs text-text-muted">
+            Recorta más cerca del diseño y deja ver el halo del material en el margen.
+          </span>
         </span>
-      </span>
-      <input
-        type="checkbox"
-        :checked="removeBackground"
-        class="size-4 accent-primary"
-        data-testid="toggle-remove-bg"
-        @change="$emit('update:removeBackground', ($event.target as HTMLInputElement).checked)"
-      >
-    </label>
+        <input
+          type="checkbox"
+          :checked="removeBackground"
+          class="size-4 accent-primary"
+          data-testid="toggle-remove-bg"
+          @change="$emit('update:removeBackground', ($event.target as HTMLInputElement).checked)"
+        >
+      </label>
+    </template>
 
     <hr class="border-border">
 

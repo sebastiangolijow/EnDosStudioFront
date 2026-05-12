@@ -398,15 +398,83 @@ export function useCanvasEditor() {
   }
 
   // === Pointer events ===
+  //
+  // The composable owns the raw pointer plumbing but stays agnostic
+  // about what dragging MEANS — the editor view subscribes a handler
+  // for shape-drag, drawn-relief (post-MVP), etc. The composable
+  // converts canvas-CSS-pixel coordinates to image-natural pixels via
+  // fitRef so handlers don't need to know about the fit transform.
+
+  /** Drag-delta callback signature. Receives the running delta from
+   *  the pointerdown anchor, expressed in image-natural pixels. */
+  type DragCallback = (delta: { dx: number; dy: number }) => void
+
+  let dragAnchorImage: { x: number; y: number } | null = null
+  let dragMoveCb: DragCallback | null = null
+  let dragEndCb: (() => void) | null = null
+
+  /** Convert a PointerEvent (CSS-pixel viewport coords) to image-
+   *  natural pixels. Returns null when no image is loaded or fit
+   *  hasn't been computed yet. */
+  function pointerToImagePixels(e: PointerEvent): { x: number; y: number } | null {
+    const canvas = uiCanvas.value
+    const f = fitRef.value
+    if (!canvas || !f || f.scale <= 0) return null
+    const rect = canvas.getBoundingClientRect()
+    const cssX = e.clientX - rect.left
+    const cssY = e.clientY - rect.top
+    return {
+      x: (cssX - f.offsetX) / f.scale,
+      y: (cssY - f.offsetY) / f.scale,
+    }
+  }
+
+  /** Begin a drag. The view calls this from its pointerdown handler
+   *  after deciding the pointer hit something draggable (e.g. inside
+   *  the geometric mask polygon). Subsequent pointermove events on
+   *  the UI canvas fire `onMove` with the running delta. `onEnd`
+   *  fires on pointerup / pointercancel. */
+  function beginPointerDrag(
+    e: PointerEvent,
+    onMove: DragCallback,
+    onEnd?: () => void,
+  ): boolean {
+    const anchor = pointerToImagePixels(e)
+    if (!anchor) return false
+    dragAnchorImage = anchor
+    dragMoveCb = onMove
+    dragEndCb = onEnd ?? null
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+    return true
+  }
 
   function onPointerDown(e: PointerEvent) {
+    // The composable doesn't auto-start drags — the view decides via
+    // beginPointerDrag(). This handler just captures so the pointer
+    // continues to deliver events to the UI canvas even when the
+    // cursor leaves it.
     ;(e.target as Element).setPointerCapture(e.pointerId)
     scheduleUiRedraw()
   }
-  function onPointerMove(_e: PointerEvent) {
+  function onPointerMove(e: PointerEvent) {
+    if (dragMoveCb && dragAnchorImage) {
+      const cur = pointerToImagePixels(e)
+      if (cur) {
+        dragMoveCb({
+          dx: cur.x - dragAnchorImage.x,
+          dy: cur.y - dragAnchorImage.y,
+        })
+      }
+    }
     scheduleUiRedraw()
   }
   function onPointerUp(_e: PointerEvent) {
+    if (dragMoveCb) {
+      dragEndCb?.()
+      dragAnchorImage = null
+      dragMoveCb = null
+      dragEndCb = null
+    }
     scheduleUiRedraw()
   }
 
@@ -660,6 +728,10 @@ export function useCanvasEditor() {
     onPointerDown,
     onPointerMove,
     onPointerUp,
+    // Drag plumbing — view subscribes from its own pointer-down
+    // handler after deciding the pointer hit a draggable feature.
+    beginPointerDrag,
+    pointerToImagePixels,
     // operations
     loadImage,
     setMask,

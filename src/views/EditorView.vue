@@ -128,6 +128,11 @@ const material = ref<Material | ''>('')
 const withRelief = ref<boolean>(false)
 const reliefNote = ref<string>('')
 const shape = ref<Shape>('contorneado')
+// Drag offset for geometric shapes, in image-natural pixels. Lets the
+// customer reposition cuadrado / circulo / oval / redondeadas around
+// off-center artwork by dragging the mask. Reset on shape change and
+// on Borrar.
+const shapeOffset = ref<{ x: number; y: number }>({ x: 0, y: 0 })
 
 /**
  * Generate a geometric polygon (in image-natural coordinates) for the
@@ -147,6 +152,8 @@ function geometricMaskPoints(
   imgWidth: number,
   imgHeight: number,
   marginPx: number,
+  offsetXPx = 0,
+  offsetYPx = 0,
 ): { kind: 'image'; x: number; y: number }[] | null {
   if (s === 'contorneado') return null
   // Negative margins are allowed for geometric shapes — the customer
@@ -161,9 +168,10 @@ function geometricMaskPoints(
   const w = imgWidth + 2 * m
   const h = imgHeight + 2 * m
   // The polygon coordinate system is image-natural, but we want the
-  // expanded shape centered on the image. Origin shifts by -m.
-  const ox = -m
-  const oy = -m
+  // expanded shape centered on the image. Origin shifts by -m, then
+  // by the customer's drag offset (image-natural pixels).
+  const ox = -m + offsetXPx
+  const oy = -m + offsetYPx
 
   if (s === 'cuadrado') {
     return [
@@ -199,10 +207,9 @@ function geometricMaskPoints(
     const baseRy = baseRx / 2  // 2:1 aspect
     const rx = baseRx + m
     const ry = baseRy + m
-    // Center on the image's bounding box, not the margin-expanded one
-    // — the oval should look anchored to the artwork.
-    const cx = imgWidth / 2
-    const cy = imgHeight / 2
+    // Center on the image's bounding box (+ customer drag offset).
+    const cx = imgWidth / 2 + offsetXPx
+    const cy = imgHeight / 2 + offsetYPx
     const N = 64
     const points: { kind: 'image'; x: number; y: number }[] = []
     for (let i = 0; i < N; i++) {
@@ -257,6 +264,8 @@ function applyGeometricMaskIfNeeded() {
     loadedImage.value.naturalWidth,
     loadedImage.value.naturalHeight,
     marginPxForGeometric(),
+    shapeOffset.value.x,
+    shapeOffset.value.y,
   )
   if (pts) {
     // If we were in smart-cut mode, the canvas base layer is the cleaned
@@ -278,6 +287,40 @@ function applyGeometricMaskIfNeeded() {
     smartCutTightPoints.value = null
   }
   // contorneado: leave any existing auto-cut mask alone.
+}
+
+/**
+ * Pointer-down on the canvas. For geometric shapes, start a drag that
+ * translates the cut polygon by the pointer's delta (in image-natural
+ * pixels). The composable handles the canvas-px → image-px math via
+ * the fit transform; we just consume the running delta and feed it
+ * into shapeOffset, then call applyGeometricMaskIfNeeded to repaint.
+ *
+ * Contorneado doesn't participate — its mask comes from Auto cut /
+ * Smart cut, not a translatable primitive.
+ */
+function onCanvasPointerDown(e: PointerEvent) {
+  if (!canvasRef.value) return
+  if (shape.value === 'contorneado') return
+  if (!canvasRef.value.hasMask()) return
+  // Anchor the drag at the current offset and accumulate the delta
+  // into it for each pointermove. This way the polygon follows the
+  // cursor smoothly without jumping when the customer presses down.
+  const anchorOffset = { ...shapeOffset.value }
+  canvasRef.value.beginPointerDrag(
+    e,
+    ({ dx, dy }: { dx: number; dy: number }) => {
+      shapeOffset.value = {
+        x: anchorOffset.x + dx,
+        y: anchorOffset.y + dy,
+      }
+      applyGeometricMaskIfNeeded()
+    },
+    // No onEnd callback needed — the debounced PATCH watch already
+    // persists the offset through the standard order-update flow
+    // (well, it would if shapeOffset were a persisted field — it
+    // isn't today; the offset is editor-session-only state).
+  )
 }
 
 /**
@@ -865,6 +908,8 @@ async function onReset() {
   cutMode.value = null
   smartCutTightPoints.value = null
   noContourMessage.value = null
+  // Drag offset for geometric shapes — back to centered.
+  shapeOffset.value = { x: 0, y: 0 }
 }
 
 // Keep a copy of the loaded HTMLImageElement so the auto-crop pipeline can
@@ -1167,6 +1212,11 @@ watch(shape, (newShape) => {
   if (current < floor) {
     cropOptions.value = { ...cropOptions.value, marginMm: floor }
   }
+  // Re-center the geometric shape whenever the customer picks a new
+  // one. They explicitly chose a primitive; the expected mental model
+  // is "start from centered, then drag if needed", not "carry over the
+  // last drag offset from a different shape".
+  shapeOffset.value = { x: 0, y: 0 }
   applyGeometricMaskIfNeeded()
 })
 
@@ -1506,11 +1556,13 @@ onMounted(bootstrapEditor)
         >
           <CanvasStage
             ref="canvasRef"
+            :ui-cursor="shape === 'contorneado' ? 'default' : 'grab'"
             :style="{
               transform: `scale(${zoomLevel})`,
               transformOrigin: 'center center',
               transition: 'transform 180ms ease-out',
             }"
+            @canvas-pointerdown="onCanvasPointerDown"
           />
         </div>
 

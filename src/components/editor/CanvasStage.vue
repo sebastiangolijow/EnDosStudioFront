@@ -8,6 +8,21 @@ import { useHolographicFX } from '@/composables/useHolographicFX'
 import type { ImagePoint } from '@/composables/useAutoCrop'
 import type { MaskPalette } from '@/utils/materialColors'
 
+interface Props {
+  /** CSS cursor for the UI canvas. The parent view sets 'move' when
+   *  the pointer hovers a draggable feature (e.g. inside a geometric
+   *  mask polygon), 'default' otherwise. */
+  uiCursor?: string
+}
+const props = withDefaults(defineProps<Props>(), { uiCursor: 'default' })
+
+const emit = defineEmits<{
+  /** Raw pointerdown forwarded so the parent can decide whether to
+   *  start a drag. Composable's own onPointerDown still runs after
+   *  this (it captures the pointer + schedules a UI redraw). */
+  'canvas-pointerdown': [event: PointerEvent]
+}>()
+
 /**
  * Destructure the refs returned by the composable so Vue's `ref="name"`
  * template syntax can auto-bind to them. Using `const editor = use…()` and
@@ -28,6 +43,8 @@ const {
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  beginPointerDrag,
+  pointerToImagePixels,
   loadImage,
   setMask,
   clearMask,
@@ -42,6 +59,11 @@ const {
   getMaskAsBlob,
   reset,
 } = useCanvasEditor()
+
+function onCanvasPointerDown(e: PointerEvent) {
+  emit('canvas-pointerdown', e)
+  onPointerDown(e)
+}
 
 // === Holographic FX layer (WebGL) ===
 //
@@ -220,6 +242,15 @@ defineExpose({
   reset: () => reset(),
   hasImage: () => !!image.value,
   hasMask: () => !!maskPoints.value && maskPoints.value.length > 0,
+  // Drag plumbing — the parent view subscribes from its own
+  // pointer-down handler after deciding the pointer hit a draggable
+  // feature (e.g. inside a geometric mask polygon).
+  beginPointerDrag: (
+    e: PointerEvent,
+    onMove: (delta: { dx: number; dy: number }) => void,
+    onEnd?: () => void,
+  ) => beginPointerDrag(e, onMove, onEnd),
+  pointerToImagePixels: (e: PointerEvent) => pointerToImagePixels(e),
 })
 </script>
 
@@ -253,8 +284,9 @@ defineExpose({
     <canvas
       ref="uiCanvas"
       class="absolute inset-0 size-full"
+      :style="{ cursor: props.uiCursor }"
       data-testid="editor-ui-canvas"
-      @pointerdown="onPointerDown"
+      @pointerdown="onCanvasPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
