@@ -55,7 +55,12 @@ function isActive(link: NavLink): boolean {
 </script>
 
 <template>
-  <div class="mx-auto grid max-w-7xl grid-cols-[240px_1fr] gap-6 px-6 py-6">
+  <!-- Responsive layout. Mobile = single column stack (sidebar collapses
+       to a top section; logged-in customers scroll through nav, then
+       content). md+ = the original 240px sidebar + main grid. The
+       previous fixed grid-cols-[240px_1fr] forced 240px of horizontal
+       space on phones, pushing main off-screen → horizontal scroll. -->
+  <div class="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 md:grid md:grid-cols-[240px_1fr] md:gap-6 md:px-6 md:py-6">
     <aside class="self-start rounded-lg border border-border bg-surface-1 p-4">
       <nav
         aria-label="Navegación de cuenta"
@@ -93,7 +98,10 @@ function isActive(link: NavLink): boolean {
       </nav>
     </aside>
 
-    <main class="rounded-lg border border-border bg-surface-1 p-6">
+    <!-- min-w-0 lets the main column shrink below its natural content
+         width so wide cards (status pills row, long product titles)
+         don't force horizontal scroll on the parent grid. -->
+    <main class="min-w-0 rounded-lg border border-border bg-surface-1 p-4 md:p-6">
       <slot />
     </main>
   </div>

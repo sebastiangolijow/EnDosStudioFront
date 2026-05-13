@@ -117,27 +117,30 @@ const visibleInspiration = computed(() =>
 </script>
 
 <template>
-  <!-- HERO — desktop is height-capped (70svh − header) so it + Cómo
-       funciona BOTH fit above the fold on a typical laptop. Mobile
-       drops the cap entirely and lets the column flow: forcing a
-       fixed height on a narrow viewport pushed the CTAs into
-       overflow-hidden behind the next section. -->
-  <section class="flex flex-col justify-center overflow-visible px-4 pb-12 pt-8 md:h-[calc(70svh-88px)] md:min-h-[480px] md:overflow-hidden md:px-12 md:pt-12 md:pb-0 lg:px-16">
-    <div class="grid gap-8 md:h-full md:grid-cols-2 md:items-center md:gap-12">
-      <!-- Left: copy + CTAs. Padded inward (md:pl-8 lg:pl-16) so the
-           headline doesn't hug the screen edge — sits a bit further
-           toward the page center, closer to the hero visual. -->
-      <div class="md:pl-8 lg:pl-16">
-        <h1 class="text-5xl font-bold leading-[1.02] tracking-tight text-text sm:text-6xl md:text-[80px] lg:text-[88px]">
+  <!-- HERO — desktop (lg+) is height-capped (70svh − header) so it +
+       Cómo funciona BOTH fit above the fold on a typical laptop.
+       Mobile AND tablet/iPad drop the cap and let the column flow:
+       forcing a fixed height on a narrower viewport pushed the CTAs
+       into overflow-hidden behind the next section. Breakpoint bumped
+       from md (768px) to lg (1024px) — iPad portrait (~810px) was
+       falling into the desktop branch with desktop-sized type and
+       overflowing. -->
+  <section class="flex flex-col justify-center overflow-visible px-4 pb-12 pt-8 lg:h-[calc(70svh-88px)] lg:min-h-[480px] lg:overflow-hidden lg:px-16 lg:pb-0 lg:pt-12">
+    <div class="grid gap-8 lg:h-full lg:grid-cols-2 lg:items-center lg:gap-12">
+      <!-- Left: copy + CTAs. Padded inward (lg:pl-16) so the headline
+           doesn't hug the screen edge — sits a bit further toward the
+           page center, closer to the hero visual. -->
+      <div class="lg:pl-16">
+        <h1 class="text-5xl font-bold leading-[1.02] tracking-tight text-text sm:text-6xl lg:text-[80px] xl:text-[88px]">
           TU DISEÑO.<br>
           TU STICKER.<br>
           <span class="text-primary">SIN LÍMITES.</span>
         </h1>
-        <p class="mt-6 max-w-xl text-base text-text-muted md:mt-8 md:text-xl">
+        <p class="mt-6 max-w-xl text-base text-text-muted lg:mt-8 lg:text-xl">
           Sube tu diseño, personaliza cada detalle, y nosotros lo convertimos en stickers de la
           mejor calidad.
         </p>
-        <div class="mt-6 flex flex-wrap items-center gap-3 md:mt-10 md:gap-4">
+        <div class="mt-6 flex flex-wrap items-center gap-3 lg:mt-10 lg:gap-4">
           <AppButton
             size="lg"
             data-testid="home-view-new-sticker"
@@ -156,12 +159,12 @@ const visibleInspiration = computed(() =>
         </div>
       </div>
 
-      <!-- Right: hero sticker visual on cosmic backdrop. On desktop the
-           container is height-capped (h-full inside the section's
+      <!-- Right: hero sticker visual on cosmic backdrop. On desktop (lg+)
+           the container is height-capped (h-full inside the section's
            fixed height) so the square shrinks to whatever fits. On
-           mobile it just renders at the column width as a clean
+           mobile + tablet it renders at column width as a clean
            aspect-square. -->
-      <div class="relative mx-auto aspect-square w-full max-w-md overflow-hidden rounded-xl border border-border md:h-full md:max-h-full md:w-auto md:max-w-none">
+      <div class="relative mx-auto aspect-square w-full max-w-md overflow-hidden rounded-xl border border-border lg:h-full lg:max-h-full lg:w-auto lg:max-w-none">
         <!-- Cosmic gradient layer -->
         <div
           class="absolute inset-0 bg-gradient-to-br from-violet-900/30 via-bg to-cyan-900/20"
@@ -191,17 +194,19 @@ const visibleInspiration = computed(() =>
   <!-- CÓMO FUNCIONA — feature pills row, with a section title matching
        Inspírate. Pills are centered within a max-width container so they
        don't run flush to the screen edges (the cards' meaning is at
-       human-reading width, not desktop-wide). -->
+       human-reading width, not desktop-wide). Grid: 1 col mobile,
+       2 cols tablet (sm), 4 cols desktop (lg). Was 4 cols at md which
+       cramped on iPad portrait. -->
   <section
     id="how"
-    class="px-8 pb-16 pt-8 md:px-12 lg:px-16"
+    class="px-4 pb-16 pt-8 sm:px-8 md:px-12 lg:px-16"
   >
     <div class="mb-8 flex items-center justify-between">
       <h2 class="text-h2 font-bold uppercase tracking-tight text-text">
         Cómo funciona
       </h2>
     </div>
-    <div class="grid gap-6 md:grid-cols-4">
+    <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
       <div
         v-for="feat in features"
         :key="feat.title"
@@ -227,7 +232,7 @@ const visibleInspiration = computed(() =>
        large enough that sample stickers read at a glance. -->
   <section
     id="inspiration"
-    class="px-8 pb-24 pt-12 md:px-12 lg:px-16"
+    class="px-4 pb-24 pt-12 sm:px-8 md:px-12 lg:px-16"
   >
     <div class="mb-8 flex items-center justify-between">
       <h2 class="text-h2 font-bold uppercase tracking-tight text-text">

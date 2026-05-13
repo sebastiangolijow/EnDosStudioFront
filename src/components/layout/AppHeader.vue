@@ -51,12 +51,14 @@ const navLinks = computed(() => [
 
       <div class="flex items-center gap-2 md:gap-4">
         <template v-if="!auth.isAuthenticated">
-          <!-- "Iniciar sesión" text link hidden on mobile to save space;
-               the Registrarse CTA is what gets new visitors moving, and
-               existing users go straight to login from there. -->
+          <!-- "Iniciar sesión" visible on every viewport. Hiding it on
+               mobile forced returning customers to go via Registrarse
+               just to find the link — one wasted step. The text is
+               compact enough that it fits next to the Registrarse CTA
+               even on narrow phones. -->
           <RouterLink
             to="/login"
-            class="hidden text-base font-medium text-text-muted hover:text-text md:inline"
+            class="text-sm font-medium text-text-muted hover:text-text md:text-base"
           >
             Iniciar sesión
           </RouterLink>
