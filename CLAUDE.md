@@ -387,15 +387,33 @@ Stepper: catalog=3, sticker=3 (collapsed from 4 — material+shape removed from 
 
 ## Status — pick up here
 
-**Deployment infra landed (2026-05-13).** `deploy/` + `DEPLOYMENT.md` ship the LabControl-shape recipe (DreamHost VPS, docker compose, nginx, Let's Encrypt, Gmail SMTP, Stripe test mode day 1, WordPress co-tenant at `/tienda`). Backend Dockerfile now ENTRYPOINTs through `entrypoint.sh` (migrate + collectstatic before gunicorn). `/api/v1/health/` endpoint added for compose healthcheck. `.env.production.template` lives in both repos.
+**🟢 LIVE at https://endosestudio.com (2026-05-13).** Hostinger KVM VPS in Frankfurt (`187.124.29.215`), docker compose, Let's Encrypt, Gmail SMTP. Stripe live keys loaded; KYC review approved end-of-day 2026-05-13 — real customer payments process end-to-end (verified with €52.45 real card + refund). Customer admin user `endosestudio@gmail.com` (role=admin) provisioned via `manage.py createsuperuser` + shell promotion (see `DEPLOYMENT.md §13`). WordPress co-tenant at `/k7p2x9/` (proxied to DH-hosted `wp.endosestudio.com`). Anonymous editor mode shipped — logged-out visitors can play with auto-crop + smart-cut (rate-limited 5/hour/IP) before the auth wall at "Material y tamaño".
 
-**Ready to execute on the VPS.** Sebastian has DreamHost SSH access, the domain, and the Gmail App Password. Run through `DEPLOYMENT.md` Phases 0→4. Stripe keys remain test-mode until live keys are swapped via §3.3 (env-update flow).
+**Ship convenience**: `make front-deploy` (build + rsync + restart nginx) and `make back-deploy` (rsync + build image + recreate web). See `Makefile` for all targets including `back-shell`, `back-logs`, `back-env`. SSH key auth only; no password prompts mid-session if `ssh-add --apple-use-keychain` is run once.
 
-### Small follow-ups (non-blocking, post-deploy)
-- **Macro PNG seamless-tile QC** — 4× `*_macro.png` may show grid lines at 2× tile boundary on large stickers. QC by eye on full-screen preview after deploy.
-- **Catalog stock decrement** — wired at `transition_to_paid` but no E2E spec exercises paid→stock path. Add when Stripe live.
-- **Cut-path SVG download from admin order detail** — backend generates at `transition_to_paid` but admin UI doesn't surface link. ~10 lines.
-- **CheckoutView Stripe mount** — currently stubbed. Swap stub for real `<PaymentElement>` once Stripe test keys are pasted into `.env.production` and webhook secret is registered.
+### Open follow-ups (non-blocking; pick up any time)
+
+**Admin / ops**
+- **"Delete order" button** in admin — destructive action on `/admin/order/{uuid}` that hits a new `DELETE /api/v1/orders/{uuid}/admin-hard-delete/`. Backend cancels the Stripe PaymentIntent (or Refund if captured) before deleting the row + cascading OrderFiles. Today's workaround: `make back-shell` → `Order.objects.filter(uuid='...').delete()`, but that doesn't touch Stripe. ~45 min.
+- **`can_reserve_orders` reactivity** — when admin toggles the whitelist flag on `/admin/users`, the customer's session doesn't see it until logout+login (auth.store reads from localStorage on boot). Fix: refetch `/users/me/` on route change or periodic timer. ~15 min.
+- **Refund webhook handler** — Stripe sends `charge.refunded` events but backend doesn't process them. Orders stay in `paid` after a refund; admin manually transitions today. Wire the handler in `apps/payments/views.py`. ~30 min.
+
+**Brand assets** (customer-supplied)
+- **Replace placeholder logo** with the real EN DOS asset. Today uses the orange "EN DOS" pill in `AppHeader.vue`; replace with the real SVG/PNG once the customer hands it over. Touchpoints: `AppHeader.vue`, possibly hero in `HomeView.vue`, email templates, favicon path.
+- **Real favicon** — currently the Vite default. Need 32×32, 192×192, apple-touch-icon, and the manifest entries. Drop the real assets in `public/` and update `index.html` `<link>` tags.
+- **Email template polish** — the transactional emails (verification, confirmation, owner notification, shipping update) use the default Django templates with plain styling. Customer wants them on-brand: EN DOS logo header, orange CTAs, holographic accents matching the site. Templates live in `endossutdio_backend/templates/`. Backend send-helpers in `apps/orders/services.py` (`send_order_received_email`, etc.).
+
+**Editor**
+- **IDB stash for anonymous editor state** — anonymous customers currently lose editor work on register (warned in the auth-wall modal). Upgrade: stash File + mask in IndexedDB, restore after register, navigate to `/order-config/{uuid}` skipping the editor. ~80 LOC in a new composable.
+- **Macro PNG seamless-tile QC** — 4× `*_macro.png` may show grid lines at 2× tile boundary on large stickers. QC by eye on full-screen preview now that production runs at scale.
+- **Holographic should TINT artwork background, not overlay** — when smart-cut bleed carries colored source pixels (e.g. gorilla on teal), FX paints rainbow OVER teal. Customer mental model: foil REFLECTS teal. Three fix candidates in archived 2026-05-10 notes.
+
+**Hygiene / tests**
+- **Catalog stock decrement E2E spec** — wired at `transition_to_paid` but no Playwright spec exercises the paid→stock path.
+- **Cut-path SVG download from admin order detail** — backend generates the SVG at `transition_to_paid` but admin UI doesn't surface a link. ~10 LOC.
+- **`useAutoCrop.ts` legacy main-thread** still on disk, not imported. Keep ~1 release as worker regression diff reference, then delete.
+- **OpenCV.js version pin** — worker currently uses `https://docs.opencv.org/4.x/opencv.js` (silent CDN drift risk). Pin to a specific build.
+- **Editor smoke test** trips on 200×200 fixture (polygon at default margin fills canvas). Larger fixture or bbox-assert solves it. Per-feature specs cover components individually so not blocking.
 
 ---
 
@@ -454,19 +472,6 @@ When in doubt about endpoint shape, **read backend serializer file** not design 
 - **Backend project**: `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/`
 - **YeKo context**: `/Users/cevichesmac/Desktop/yeko_studio/yeko_studio_context.md`
 - **Skills**: `~/.claude/skills/bootstrap-stickerapp-frontend/` `canvas-editor-system/` `opencv-js-integration/` `api-contract-check/` `playwright-frontend-test/`
-
----
-
-## Open follow-ups (non-blocking)
-
-- **Holographic should TINT artwork background, not overlay**: when smart-cut bleed carries colored source pixels (e.g. gorilla on teal), FX paints rainbow OVER teal. Customer mental model: foil REFLECTS teal. Three fix candidates in archived 2026-05-10 notes if needed.
-- **Macro PNG tileability** — see Small follow-ups above.
-- **`useAutoCrop.ts` legacy main-thread** still on disk, not imported. Keep ~1 release as worker regression diff reference, then delete.
-- **Smoke test** for editor flow tripped on 200×200 fixture (polygon at default margin filled canvas). Larger fixture or bbox-assert solves it. Not blocking — per-feature specs cover components individually.
-
-### TODO radar
-- OpenCV.js version pin (currently `4.x` CDN tag).
-- Email backend prod (Gmail SMTP / SES / Mailgun).
 
 ---
 
