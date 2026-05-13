@@ -26,7 +26,7 @@ const isLoading = ref<boolean>(false)
 const isModalOpen = ref<boolean>(false)
 const editingUuid = ref<string | null>(null)
 const formCode = ref<string>('')
-const formPercent = ref<number>(10)
+const formPercent = ref<string>('10')
 const formEnabled = ref<boolean>(true)
 const isSaving = ref<boolean>(false)
 
@@ -45,7 +45,7 @@ async function load() {
 function openCreate() {
   editingUuid.value = null
   formCode.value = ''
-  formPercent.value = 10
+  formPercent.value = '10'
   formEnabled.value = true
   isModalOpen.value = true
 }
@@ -53,7 +53,7 @@ function openCreate() {
 function openEdit(d: Discount) {
   editingUuid.value = d.uuid
   formCode.value = d.code
-  formPercent.value = d.percent_off
+  formPercent.value = String(d.percent_off)
   formEnabled.value = d.is_enabled
   isModalOpen.value = true
 }
@@ -64,7 +64,8 @@ async function submitForm() {
     toast.warning('Ingresá un código.')
     return
   }
-  if (formPercent.value < 1 || formPercent.value > 100) {
+  const percent = Number.parseInt(formPercent.value, 10)
+  if (!Number.isFinite(percent) || percent < 1 || percent > 100) {
     toast.warning('El porcentaje debe estar entre 1 y 100.')
     return
   }
@@ -73,7 +74,7 @@ async function submitForm() {
     if (editingUuid.value) {
       const updated = await discountsService.update(editingUuid.value, {
         code,
-        percent_off: formPercent.value,
+        percent_off: percent,
         is_enabled: formEnabled.value,
       })
       const idx = discounts.value.findIndex((d) => d.uuid === updated.uuid)
@@ -82,7 +83,7 @@ async function submitForm() {
     } else {
       const created = await discountsService.create({
         code,
-        percent_off: formPercent.value,
+        percent_off: percent,
         is_enabled: formEnabled.value,
       })
       discounts.value = [created, ...discounts.value]
@@ -260,7 +261,7 @@ onMounted(load)
           helper="Se normaliza a mayúsculas al guardar."
         />
         <AppInput
-          v-model.number="formPercent"
+          v-model="formPercent"
           label="Porcentaje de descuento (1-100)"
           type="number"
           required

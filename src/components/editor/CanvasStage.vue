@@ -216,9 +216,9 @@ defineExpose({
   // clones so callers can hold stable references — the underlying refs
   // get reassigned on every setMask call.
   getMaskPoints: (): ImagePoint[] | null =>
-    maskPoints.value ? maskPoints.value.map((p) => ({ x: p.x, y: p.y })) : null,
+    maskPoints.value ? maskPoints.value.map((p) => ({ kind: 'image' as const, x: p.x, y: p.y })) : null,
   getArtworkPoints: (): ImagePoint[] | null =>
-    artworkPoints.value ? artworkPoints.value.map((p) => ({ x: p.x, y: p.y })) : null,
+    artworkPoints.value ? artworkPoints.value.map((p) => ({ kind: 'image' as const, x: p.x, y: p.y })) : null,
   setMaskVisible: (v: boolean) => setMaskVisible(v),
   setMaskPalette: (palette: MaskPalette) => setMaskPalette(palette),
   setRemoveBackground: (enabled: boolean) => setRemoveBackground(enabled),

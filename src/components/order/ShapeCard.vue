@@ -24,6 +24,7 @@ const TAGLINES: Record<Shape, string> = {
   contorneado: 'La línea de corte sigue el contorno del diseño.',
   cuadrado: 'Corte rectangular del tamaño elegido.',
   circulo: 'Círculo del tamaño elegido.',
+  oval: 'Óvalo horizontal 2:1, tipo credencial.',
   redondeadas: 'Rectángulo con esquinas redondeadas.',
 }
 

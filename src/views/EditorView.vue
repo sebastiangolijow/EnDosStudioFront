@@ -488,7 +488,7 @@ function captureSnapshot(): EditorSnapshot {
     artworkPoints: canvasRef.value?.getArtworkPoints() ?? null,
     cutMode: cutMode.value,
     smartCutTightPoints: smartCutTightPoints.value
-      ? smartCutTightPoints.value.map((p) => ({ x: p.x, y: p.y }))
+      ? smartCutTightPoints.value.map((p) => ({ kind: 'image' as const, x: p.x, y: p.y }))
       : null,
     shape: shape.value,
     material: material.value,
@@ -549,7 +549,7 @@ async function applySnapshot(s: EditorSnapshot) {
     }
     cutMode.value = s.cutMode
     smartCutTightPoints.value = s.smartCutTightPoints
-      ? s.smartCutTightPoints.map((p) => ({ x: p.x, y: p.y }))
+      ? s.smartCutTightPoints.map((p) => ({ kind: 'image' as const, x: p.x, y: p.y }))
       : null
     // Draft order
     shape.value = s.shape

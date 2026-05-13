@@ -65,6 +65,7 @@ const isMutating = ref<Set<string>>(new Set()) // uuid set; per-row spinner
 const statusCounts = ref<Record<OrderStatus, number>>({
   draft: 0,
   placed: 0,
+  reserved: 0,
   paid: 0,
   in_production: 0,
   shipped: 0,
