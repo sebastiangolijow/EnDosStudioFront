@@ -217,6 +217,38 @@ export const ordersService = {
     return response.data
   },
 
+  /**
+   * Anonymous variant of smartCut for the "try before you sign up"
+   * editor mode. Posts the image directly as multipart instead of
+   * looking it up from an Order. Backend rate-limits this to N/hour
+   * per IP (see settings.REST_FRAMEWORK.DEFAULT_THROTTLE_RATES.
+   * smart_cut_anon). Authenticated users should use smartCut() above
+   * to bypass the throttle.
+   *
+   * 429 from the backend means the IP hit the throttle. The caller
+   * should surface "creá una cuenta para usar Recorte inteligente
+   * sin límites" rather than the generic retry message.
+   */
+  async smartCutAnonymous(
+    file: File,
+    marginMm = 15,
+    smoothness = 5,
+  ): Promise<SmartCutResponse> {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('margin_mm', String(marginMm))
+    form.append('smoothness', String(smoothness))
+    // axios's shared instance defaults Content-Type to application/json.
+    // For multipart we need the browser to set it itself (with the right
+    // boundary) — pass `undefined` so axios doesn't write the header.
+    // Otherwise DRF MultiPartParser sees application/json and 415s.
+    const response = await api.post('/orders/smart-cut/', form, {
+      headers: { 'Content-Type': undefined as unknown as string },
+      timeout: 90_000,
+    })
+    return response.data
+  },
+
   // === Pricing preview (no DB write) ===
 
   async quote(request: PriceQuoteRequest): Promise<PriceQuoteResponse> {

@@ -46,13 +46,22 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
-    // Order UUID is required once a draft has been created server-side; before
-    // that the editor lives on /upload. Keeping :uuid required avoids the
-    // foot-gun of editing without a backed order to attach files to.
+    // Authenticated editor — operates on a backend draft. PATCHes
+    // material/shape/relief, uploads files, persists mask.
     path: '/editor/:uuid',
     name: 'editor',
     component: () => import('@/views/EditorView.vue'),
     meta: { requiresAuth: true },
+  },
+  {
+    // Anonymous "try before sign up" editor. No draft, no backend
+    // mutations except the rate-limited /orders/smart-cut/ endpoint.
+    // When the customer clicks "Material y tamaño" we auth-wall them
+    // (they lose the editor state and restart on register — see the
+    // design discussion that landed this route).
+    path: '/editor',
+    name: 'editor-anonymous',
+    component: () => import('@/views/EditorView.vue'),
   },
   {
     path: '/preview',

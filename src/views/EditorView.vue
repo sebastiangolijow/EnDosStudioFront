@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppStepper from '@/components/ui/AppStepper.vue'
+import AppModal from '@/components/ui/AppModal.vue'
 import AppBottomSheet from '@/components/ui/AppBottomSheet.vue'
 import CanvasStage from '@/components/editor/CanvasStage.vue'
 import EditorToolbar from '@/components/editor/EditorToolbar.vue'
@@ -34,11 +35,27 @@ const steps = [
 
 const orderUuid = computed(() => route.params.uuid as string)
 
+// "Anonymous editor" mode: the customer hit /editor without a :uuid.
+// They have no backend Order yet — every backend mutation is no-op'd,
+// the file lives in memory only, and smart-cut goes through the
+// IP-rate-limited /orders/smart-cut/ endpoint. Trying to advance past
+// the editor (Continuar / "Material y tamaño") opens the auth wall.
+const isAnonymousEditor = computed<boolean>(() => !route.params.uuid)
+
 // === State ===
 const order = ref<Order | null>(null)
 const isLoading = ref<boolean>(true)
 const isSaving = ref<boolean>(false)
 const noContourMessage = ref<string | null>(null)
+
+// Holds the in-memory File for anonymous mode (no backend OrderFile
+// row to read from). Authenticated mode keeps using `order.value.files`
+// as before; this ref stays null there.
+const anonymousFile = ref<File | null>(null)
+// Auth-wall modal trigger. Opens when the anonymous customer clicks
+// any "next step" CTA (Continuar / "Material y tamaño") or smart-cut
+// when they've already burned their rate limit.
+const authWallOpen = ref<boolean>(false)
 
 // Zoom level for the canvas preview — pure CSS scale applied to the
 // canvas-stack wrapper. Cycles 1x → 1.5x → 2x → 1x. Doesn't affect
@@ -629,14 +646,18 @@ function onInspectorChange<K extends 'shape' | 'material' | 'withRelief' | 'remo
   else if (field === 'removeBackground') removeBackground.value = value as boolean
 }
 
-const hasOriginalFile = computed<boolean>(
+const hasOriginalFile = computed<boolean>(() => {
+  // Anonymous mode reads the in-memory File ref; authenticated reads
+  // the order's file list. Either path indicates "the editor canvas
+  // has an image to render".
+  if (isAnonymousEditor.value) return anonymousFile.value !== null
   // Optional-chain `files` too: there's a brief reactivity gap during
   // smart-cut where order.value is set but order.value.files might be
   // undefined (the response splice fires before Vue patches the array).
   // Without this guard, `.some` blows up and Vue surfaces it as a hard
   // "Unhandled error during execution of component update" toast.
-  () => order.value?.files?.some((f) => f.kind === 'original') ?? false,
-)
+  return order.value?.files?.some((f) => f.kind === 'original') ?? false
+})
 
 /**
  * Run smart-cut against the backend. The backend dilates the rembg-cleaned
@@ -649,7 +670,10 @@ const hasOriginalFile = computed<boolean>(
  * reflects the in-flight request via `isSmartCutting`.
  */
 async function runSmartCut(marginMm: number, smoothness: number) {
-  if (!order.value || !canvasRef.value) return
+  if (!canvasRef.value) return
+  // Auth: anonymous mode needs the in-memory File; authed mode needs an Order.
+  if (isAnonymousEditor.value && !anonymousFile.value) return
+  if (!isAnonymousEditor.value && !order.value) return
 
   // Floor at the printable minimum; backend also clamps but we want the
   // local state in sync with what the server actually used.
@@ -662,11 +686,17 @@ async function runSmartCut(marginMm: number, smoothness: number) {
   noContourMessage.value = null
   isSmartCutting.value = true
   try {
-    const result = await ordersService.smartCut(
-      order.value.uuid,
-      effectiveMargin,
-      effectiveSmoothness,
-    )
+    const result = isAnonymousEditor.value
+      ? await ordersService.smartCutAnonymous(
+          anonymousFile.value!,
+          effectiveMargin,
+          effectiveSmoothness,
+        )
+      : await ordersService.smartCut(
+          order.value!.uuid,
+          effectiveMargin,
+          effectiveSmoothness,
+        )
     // Stale response — customer changed editor context while the request
     // was in flight. Drop silently; the new context already has the right
     // state.
@@ -724,7 +754,13 @@ async function runSmartCut(marginMm: number, smoothness: number) {
   } catch (e) {
     console.error('[smart-cut] failed:', e)
     const status = (e as { response?: { status?: number } }).response?.status
-    if (status === 503) {
+    if (status === 429) {
+      // Anonymous rate limit (5/hour per IP). Push register CTA.
+      toast.error(
+        'Llegaste al límite de Recorte inteligente. Creá una cuenta gratuita para usarlo sin límites.',
+      )
+      authWallOpen.value = true
+    } else if (status === 503) {
       toast.error('El recorte inteligente no está disponible. Intentá Auto cut.')
     } else if (status === 400) {
       toast.error('Subí tu diseño antes de usar Recorte inteligente.')
@@ -1125,6 +1161,10 @@ async function patchDraftFields(): Promise<typeof lastSavedSnapshot> {
 }
 
 function maybePersistOrderEdit() {
+  // Anonymous mode: no order to patch. The watcher still fires on
+  // local refs, but we no-op so the canvas state is the only source
+  // of truth until the customer registers.
+  if (isAnonymousEditor.value) return
   if (!order.value) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(async () => {
@@ -1148,6 +1188,11 @@ watch([material, withRelief, reliefNote, shape], maybePersistOrderEdit)
  *      feedback that their work is safe.
  */
 async function onSaveDraft() {
+  // Anonymous mode can't save — auth-wall instead. Same UX as Continuar.
+  if (isAnonymousEditor.value) {
+    authWallOpen.value = true
+    return
+  }
   if (!order.value || !canvasRef.value || isSaving.value) return
   // Cancel any in-flight debounce so we don't race against our own
   // explicit save.
@@ -1223,6 +1268,13 @@ watch(shape, (newShape) => {
 // === Save / Continue ===
 
 async function onContinue() {
+  // Anonymous mode — auth wall. The customer played in the editor; now
+  // we ask them to register to continue. They lose editor state (design
+  // tradeoff: simpler than IDB-stashing the blob + mask).
+  if (isAnonymousEditor.value) {
+    authWallOpen.value = true
+    return
+  }
   if (!order.value) return
   if (!canvasRef.value?.hasMask()) {
     // No mask is OK — the customer can move on without an auto-crop. The
@@ -1278,6 +1330,12 @@ async function onContinue() {
 }
 
 function onBack() {
+  // Anonymous mode has no dashboard to fall back to — just send the
+  // customer home where they can browse the catalog or try again.
+  if (isAnonymousEditor.value) {
+    router.push('/')
+    return
+  }
   // Editor is now step 1 — "back" goes to the dashboard rather than
   // a separate upload page. Customer's in-progress draft persists
   // (autosave) so they can come back via Borradores filter.
@@ -1372,6 +1430,38 @@ async function bootstrapEditor() {
  * customer can retry without losing their place.
  */
 async function onOriginalFileSelected(file: File) {
+  // Anonymous mode: skip the backend. Keep the File in memory; produce
+  // an Object URL so the canvas can render it. No order to refetch, no
+  // files list to update. The canvas-load tail below still applies —
+  // material setup, geometric mask, etc. — because those are pure
+  // canvas operations.
+  if (isAnonymousEditor.value) {
+    anonymousFile.value = file
+    isSaving.value = true
+    try {
+      await nextTick()
+      canvasRef.value?.setMaskPalette(getMaskPalette(material.value))
+      canvasRef.value?.setTransparentMaterial(material.value === 'vinilo_transparente')
+      canvasRef.value?.setMaterialActive(
+        material.value !== '' && material.value !== 'vinilo_transparente',
+      )
+      canvasRef.value?.setHolographicMaterial(
+        material.value === 'holografico' ||
+          material.value === 'holografico_transparente',
+      )
+      canvasRef.value?.setEffectMode(effectModeFor(material.value))
+      canvasRef.value?.setRemoveBackground(removeBackground.value)
+      const localUrl = URL.createObjectURL(file)
+      await loadImageIntoEditor(localUrl)
+      applyGeometricMaskIfNeeded()
+    } catch (e) {
+      console.error('[editor anon] file decode failed:', e)
+      toast.error('No pudimos cargar tu imagen. Probá con otro archivo.')
+    } finally {
+      isSaving.value = false
+    }
+    return
+  }
   if (!order.value) return
   isSaving.value = true
   try {
@@ -1413,7 +1503,16 @@ async function onOriginalFileSelected(file: File) {
   }
 }
 
-onMounted(bootstrapEditor)
+onMounted(() => {
+  if (isAnonymousEditor.value) {
+    // Skip every backend operation. The editor renders its
+    // empty-state dropzone; once the customer drops a file we keep
+    // it in memory (anonymousFile). Inspector defaults are fine.
+    isLoading.value = false
+    return
+  }
+  bootstrapEditor()
+})
 </script>
 
 <template>
@@ -1690,5 +1789,69 @@ onMounted(bootstrapEditor)
     >
       Cargando editor…
     </div>
+
+    <!-- Anonymous mode: persistent reminder so the customer knows their
+         work isn't being saved. Sticky to the viewport bottom so it
+         stays visible while they scroll the editor. -->
+    <div
+      v-if="isAnonymousEditor"
+      class="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-4 pb-4"
+    >
+      <div class="pointer-events-auto flex max-w-3xl items-center gap-3 rounded-lg border border-primary/40 bg-surface-1/95 px-4 py-3 text-sm text-text shadow-card backdrop-blur">
+        <span aria-hidden="true">⚠️</span>
+        <span class="flex-1">
+          Estás probando sin cuenta. Creá una gratuita para guardar tu diseño
+          y hacer el pedido.
+        </span>
+        <AppButton
+          size="sm"
+          data-testid="anon-banner-register"
+          @click="authWallOpen = true"
+        >
+          Crear cuenta
+        </AppButton>
+      </div>
+    </div>
+
+    <!-- Auth wall — fires when the anonymous customer clicks Continuar,
+         Guardar, or any "next step" CTA. They lose editor state on
+         either action (design tradeoff: simpler than IDB stash). -->
+    <AppModal
+      :open="authWallOpen"
+      title="Creá tu cuenta para continuar"
+      @close="authWallOpen = false"
+    >
+      <p class="text-sm text-text-muted">
+        Estás probando el editor sin cuenta. Para guardar tu diseño,
+        elegir material y tamaño, y hacer el pedido, creá una cuenta
+        gratuita. Solo te pedimos email y un nombre.
+      </p>
+      <p class="mt-3 rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-warning">
+        Al continuar perderás los cambios actuales del editor —
+        tendrás que volver a subir tu diseño después de registrarte.
+        Estamos trabajando para que tu sesión se guarde automáticamente.
+      </p>
+      <div class="mt-4 flex flex-wrap justify-end gap-2">
+        <AppButton
+          variant="ghost"
+          @click="authWallOpen = false"
+        >
+          Seguir probando
+        </AppButton>
+        <AppButton
+          variant="ghost"
+          data-testid="anon-modal-login"
+          @click="router.push('/login')"
+        >
+          Iniciar sesión
+        </AppButton>
+        <AppButton
+          data-testid="anon-modal-register"
+          @click="router.push('/register')"
+        >
+          Crear cuenta
+        </AppButton>
+      </div>
+    </AppModal>
   </section>
 </template>
