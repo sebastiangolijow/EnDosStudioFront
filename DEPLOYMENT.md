@@ -406,6 +406,168 @@ sed -i 's|^FRONTEND_URL=.*|FRONTEND_URL=https://endosestudio.com|' /opt/stickera
 
 Then run the env-update flow (§8.3) to recreate web.
 
+### 7.8 Stripe LIVE-mode onboarding (when the customer is ready)
+
+Test-mode keys never charge real cards. To accept actual payments, the
+shop owner must activate his Stripe account and we swap to `pk_live_*` /
+`sk_live_*` keys. **Do this onsite with the customer — Stripe requires
+the account owner to do the AML/identity flow himself.**
+
+Total time at the customer's house: 45 min if his paperwork is ready,
+~90 min if not. Bring his DNI/NIE photos, CIF/NIF, business IBAN,
+phone with SIM (for SMS 2FA), business address, the legal-name on the
+bank account, and a laptop with stable wifi.
+
+#### 7.8.1 — Activate the Stripe account (customer's hands on keyboard)
+
+1. `dashboard.stripe.com` → click **"Activate payments"** banner.
+2. **Country**: España.
+3. **Business type**: "Individual" (autónomo) OR "Company" (SL). Match
+   his Hacienda registration exactly — wrong choice = restricted account.
+4. **Business details**:
+   - **Legal business name**: as filed with Hacienda (NOT the trade
+     name "EnDosEstudio").
+   - **Trade name / DBA**: "EnDosEstudio" (this shows up on card statements).
+   - **CIF/NIF**: `12345678X` (DNI) or `B12345678` (SL CIF).
+   - **MCC / industry**: pick 5111 ("Stationery / Office supplies") or
+     5943 ("Specialty Retail Stores - Stationery"). **Don't pick "Misc"**
+     — gets flagged for manual review.
+   - **Website**: `https://endosestudio.com`. Stripe scrapes this.
+   - **Product description** (be specific — vague text triggers
+     follow-up questions): *"Custom die-cut stickers and printed vinyl
+     products, sold direct to consumer in Spain via endosestudio.com."*
+5. **Personal details** (account holder, even for SL): full legal name,
+   DOB, residential address, DNI number, photo upload of DNI front/back
+   + selfie / proof-of-identity.
+6. **Bank account for payouts**: IBAN + account-holder name (must match
+   autónomo or SL name). Stripe may verify with €0.01 micro-deposit
+   (~2 day wait if so).
+7. **2FA**: SMS to his number. **Save the recovery code** to his password
+   manager — losing it locks him out of Stripe.
+8. **Submit for review**: individual/autónomo approves in minutes; SL
+   can take 1-2 days for manual review.
+
+#### 7.8.2 — Generate live API keys
+
+After submission (keys appear even while "pending review"):
+
+1. Dashboard → **Developers → API keys**.
+2. **Toggle "Test mode" off → "Live mode" on** (big toggle, top-right).
+3. Copy:
+   - **Publishable key** `pk_live_51...` (~107 chars, safe to expose).
+   - **Secret key** `sk_live_51...` (~107 chars). **Stripe shows this
+     ONCE — reveal-and-copy immediately**. Lost = rotate (clicks two
+     menus, no downtime if you swap env atomically).
+4. Save both into the customer's password manager AND a copy in yours,
+   labeled "Stripe LIVE keys — endosestudio".
+
+#### 7.8.3 — Register the live webhook (separate from test webhook)
+
+1. Confirm dashboard is in **LIVE mode** (toggle top-right). Then
+   **Developers → Webhooks → "+ Add endpoint"**.
+2. **Endpoint URL**: `https://endosestudio.com/api/v1/payments/webhooks/stripe/`
+3. **Events**: same three as test mode — `payment_intent.succeeded`,
+   `payment_intent.payment_failed`, `charge.succeeded`.
+4. Save. Then click the new webhook row → reveal the **Signing secret**
+   (`whsec_...`, different from the test-mode one). Copy.
+
+#### 7.8.4 — Swap keys on the VPS (env-update flow)
+
+```sh
+ssh deploy@187.124.29.215
+nano /opt/stickerapp/.env.production
+# Change all THREE lines:
+#   STRIPE_PUBLISHABLE_KEY=pk_live_...
+#   STRIPE_SECRET_KEY=sk_live_...
+#   STRIPE_WEBHOOK_SECRET=whsec_...   (the NEW live-mode one)
+cd /opt/stickerapp
+docker compose -f docker-compose.prod.yml stop web
+docker compose -f docker-compose.prod.yml rm -f web
+docker compose -f docker-compose.prod.yml up -d web
+```
+
+Verify the new env actually took:
+
+```sh
+docker compose -f docker-compose.prod.yml exec web printenv | grep STRIPE | head -c 60
+```
+
+Should start with `STRIPE_SECRET_KEY=sk_live_`. If still `sk_test_`,
+the recreate didn't fire — rerun stop→rm→up. (Plain `restart` keeps
+the old env. This is the #1 silent failure mode.)
+
+#### 7.8.5 — Rebuild the frontend with the live publishable key
+
+The Vue bundle bakes `VITE_STRIPE_PUBLISHABLE_KEY` at build time, so
+swapping `.env.production` on the VPS doesn't help — the frontend has
+the old key in its compiled JS chunks. Rebuild from the laptop:
+
+```sh
+cd endosstudio_frontend
+# Update endosstudio_frontend/.env.production:
+#   VITE_STRIPE_PUBLISHABLE_KEY=pk_live_...
+npm run build
+rsync -avz --delete dist/ deploy@187.124.29.215:/opt/stickerapp/frontend/dist/
+ssh deploy@187.124.29.215 'cd /opt/stickerapp && docker compose -f docker-compose.prod.yml restart nginx'
+```
+
+Hard-refresh the browser (⌘ Shift R) to bust the JS cache.
+
+#### 7.8.6 — Live smoke test (with a small REAL charge)
+
+Don't ship without verifying. Steps:
+
+1. Open an incognito browser, register a fresh customer account on
+   `https://endosestudio.com`, place a small sticker order (€25 minimum
+   work charge is fine if customer is OK with €25 round-trip; otherwise
+   coordinate a smaller test).
+2. Pay with the **customer's own debit card** (his real card; we're
+   testing his account, not his customers').
+3. Verify:
+   - Order flips to `paid` in `/admin/orders`.
+   - Confirmation email arrives at `endosestudio@gmail.com`.
+   - Stripe Dashboard → Payments (live mode) shows the new payment as
+     "Succeeded".
+   - His bank app shows the charge.
+4. **Refund**: Stripe Dashboard → Payments → click payment → "Refund
+   payment" → full refund. The customer gets the principal back in
+   2-5 business days; Stripe's ~€0.25 processing fee is NOT refunded
+   (that's the cost of the smoke test). Order stays `paid` in the app
+   (no refund webhook handling yet — known limitation; customer closes
+   the test order manually).
+
+#### 7.8.7 — Hand off to the customer
+
+Show him in person:
+- The customer-facing flow on his own phone (sign up → order → pay).
+- `/admin/orders` daily workflow + status dropdown + shipping popup.
+- `/admin/discounts` for promo codes.
+- `/admin/users` for in-store-pickup whitelist.
+- Bookmarks: `endosestudio.com/admin/orders`, `dashboard.stripe.com`,
+  `endosestudio.com/django-admin/` (advise to use sparingly).
+
+Leave in his password manager:
+- App admin login (`endosestudio@gmail.com` + password).
+- Stripe 2FA recovery code.
+- DreamHost panel password (for `wp.endosestudio.com` WP edits if relevant).
+- Your contact for "something broke" with a clear SLA expectation.
+
+#### 7.8.8 — Common gotchas on Stripe live onboarding
+
+- **"Account restricted" after submission**: Stripe wants more docs
+  (bank statement, clearer DNI photo). They email — check inbox,
+  upload, resubmit.
+- **First payout takes 7 days** for new EU accounts. Subsequent
+  payouts: daily, 1-2 day delay.
+- **Live mode toggle is hidden** until activation is at least submitted.
+- **Wrong webhook URL** is a silent killer — copy-paste, don't retype.
+  Symptom: orders pay but never flip to `paid`. Log grep: `docker
+  compose logs web | grep -i "webhook signature"`.
+- **Forgetting BOTH secret + webhook secret swap**: the test-mode
+  webhook secret won't verify live-mode events. Signature errors
+  on every delivery. Symptom: same as above (orders stuck in `placed`
+  after payment), but log shows "Invalid signature" errors.
+
 ---
 
 ## 8. Day-2 deploy flows
@@ -583,6 +745,22 @@ ssh deploy@187.124.29.215 'sudo fail2ban-client status sshd'
 
 # Unban your own IP after a fail2ban lockout (via Hostinger console, NOT ssh)
 fail2ban-client set sshd unbanip <your-ip>
+
+# === Admin user creation (run on VPS) ===========================================
+#
+# There's no self-service "create admin" form by design. Admin/staff users are
+# minted server-side. Two steps:
+#
+# 1. Create the Django superuser (interactive prompt for email + password):
+ssh deploy@187.124.29.215 'docker compose -f /opt/stickerapp/docker-compose.prod.yml exec web python manage.py createsuperuser'
+#
+# 2. Promote to role=admin + create the allauth EmailAddress row (without that
+#    row, login silently fails — see apps/users/models.py docstring). Edit
+#    the email if creating a different admin:
+ssh deploy@187.124.29.215 "docker compose -f /opt/stickerapp/docker-compose.prod.yml exec web python manage.py shell -c \"from apps.users.models import User; from allauth.account.models import EmailAddress; u = User.objects.get(email='endosestudio@gmail.com'); u.role = 'admin'; u.is_active = True; u.is_verified = True; u.save(); EmailAddress.objects.update_or_create(user=u, email=u.email, defaults={'primary': True, 'verified': True}); print(f'OK: {u.email} role={u.role} active={u.is_active} verified={u.is_verified} superuser={u.is_superuser}')\""
+#
+# For shop_staff (no Django admin, just Vue /admin/* views), same recipe with
+# role='shop_staff' and is_superuser=False / is_staff=False.
 ```
 
 ---
