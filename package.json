@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
+    "@stripe/stripe-js": "^9.5.0",
     "axios": "^1.6.7",
     "pinia": "^2.1.7",
     "vue": "^3.4.21",

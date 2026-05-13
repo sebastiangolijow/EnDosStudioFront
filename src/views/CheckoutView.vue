@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppStepper from '@/components/ui/AppStepper.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -11,6 +11,7 @@ import ShippingForm from '@/components/order/ShippingForm.vue'
 import { ordersService } from '@/services/orders.service'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth.store'
+import { mountPaymentElement, type MountedElements } from '@/composables/useStripe'
 import {
   type Order,
   type ShippingMethod,
@@ -114,6 +115,15 @@ const pickupTime = ref<string>('11:00')
 const canReserve = computed<boolean>(() => !!authStore.user?.can_reserve_orders)
 const paymentIntentId = ref<string | null>(null)
 const stripeError = ref<string | null>(null)
+
+// Stripe Elements mount state. paymentElRef points at the <div> in the
+// template that hosts the iframe. mounted holds the Stripe + Elements +
+// PaymentElement handles we need to confirmPayment + cleanup. isConfirming
+// gates the "Pagar" button while Stripe is processing.
+const paymentElRef = ref<HTMLElement | null>(null)
+let mounted: MountedElements | null = null
+const isStripeReady = ref<boolean>(false)
+const isConfirming = ref<boolean>(false)
 
 // Discount code state. The customer types into discountInput; clicking
 // Aplicar fires ordersService.applyDiscount which validates + recomputes
@@ -353,9 +363,8 @@ async function onPay() {
     clientSecret.value = checkout.client_secret
     paymentIntentId.value = checkout.payment_intent_id
 
-    // 4. TODO: mount <PaymentElement> with `options: { clientSecret }` here.
-    //    For now the placeholder card below shows the customer the next-step
-    //    state so the test harness has something to assert on.
+    // 4. The watcher on clientSecret picks it up and mounts <PaymentElement>
+    //    into paymentElRef on the next tick. See watchEffect below.
   } catch (e) {
     const status = (e as { response?: { status?: number } }).response?.status
     const data = (e as { response?: { data?: { detail?: string; message?: string } } }).response?.data
@@ -388,6 +397,78 @@ async function onPay() {
     isProcessing.value = false
   }
 }
+
+// Mount Stripe Elements as soon as we have a client_secret + the target
+// <div> is in the DOM. The v-if on the form block means the <div> only
+// renders AFTER clientSecret is set, so we use nextTick to wait one frame.
+watch(clientSecret, async (secret) => {
+  if (!secret) return
+  await nextTick()
+  const node = paymentElRef.value
+  if (!node) return
+  try {
+    mounted = await mountPaymentElement({ clientSecret: secret, node })
+    isStripeReady.value = true
+  } catch (e) {
+    stripeError.value =
+      (e as Error).message
+      ?? 'No pudimos cargar el formulario de pago. Recargá la página.'
+  }
+})
+
+/**
+ * Confirm the payment via Stripe.js. Three branches:
+ *   1. Card needs no further action (e.g. 4242 test card) — confirmPayment
+ *      resolves with paymentIntent.status === 'succeeded' and no redirect.
+ *      We push to /confirmation/{uuid} ourselves.
+ *   2. 3DS / SCA challenge — confirmPayment redirects the browser to the
+ *      authentication URL, then back to return_url. The customer lands on
+ *      /confirmation/{uuid} either way.
+ *   3. Error — we surface the message inline.
+ *
+ * The backend webhook is what flips the order to `paid` async. The
+ * confirmation view polls until that happens.
+ */
+async function onConfirmPayment() {
+  if (!mounted || !orderUuid.value) return
+  isConfirming.value = true
+  stripeError.value = null
+  const returnUrl = `${window.location.origin}/confirmation/${orderUuid.value}`
+  try {
+    const { error, paymentIntent } = await mounted.stripe.confirmPayment({
+      elements: mounted.elements,
+      confirmParams: { return_url: returnUrl },
+      redirect: 'if_required',
+    })
+    if (error) {
+      stripeError.value =
+        error.message
+        ?? 'No pudimos procesar el pago. Revisá los datos e intentá de nuevo.'
+      return
+    }
+    // No-redirect path — Stripe finished synchronously. PaymentIntent
+    // status is one of: 'succeeded' | 'processing' | 'requires_action'.
+    if (paymentIntent && (paymentIntent.status === 'succeeded' || paymentIntent.status === 'processing')) {
+      router.push(`/confirmation/${orderUuid.value}`)
+    } else {
+      stripeError.value = 'El pago no se completó. Intentá de nuevo.'
+    }
+  } finally {
+    isConfirming.value = false
+  }
+}
+
+// Cleanup: unmount the Stripe element when the user leaves the page so
+// we don't leak the iframe + listeners. Stripe's elements.destroy() is
+// idempotent.
+onBeforeUnmount(() => {
+  if (mounted) {
+    try {
+      mounted.paymentElement.unmount()
+    } catch { /* element may already be detached */ }
+    mounted = null
+  }
+})
 
 /**
  * Reserve flow — alternative to Stripe for whitelisted customers.
@@ -663,33 +744,35 @@ onMounted(loadOrder)
           </div>
         </AppCard>
 
-        <!-- Stripe Elements placeholder. Replaced by <PaymentElement> when
-             the checkout endpoint returns a real client_secret + we have
-             a Stripe.js publishable key in the env. -->
+        <!-- Stripe Elements form. Renders once /checkout/ returns a
+             client_secret. The watcher on clientSecret mounts a Stripe
+             <PaymentElement> into paymentElRef on the next tick. -->
         <AppCard
           v-if="clientSecret"
-          data-testid="checkout-stripe-placeholder"
+          data-testid="checkout-stripe-form"
         >
           <h2 class="text-h3 font-bold text-text">
-            Casi listo
+            Datos de pago
           </h2>
           <p class="mt-2 text-sm text-text-muted">
-            Tu pedido está reservado. Stripe te pedirá los datos de la tarjeta a continuación.
+            Pago seguro procesado por Stripe. Tu tarjeta no se guarda en nuestros servidores.
           </p>
-          <dl class="mt-4 flex flex-col gap-2 text-xs">
-            <div class="flex justify-between gap-3 text-text-muted">
-              <dt>PaymentIntent</dt>
-              <dd class="font-mono">
-                {{ paymentIntentId }}
-              </dd>
-            </div>
-          </dl>
-          <p class="mt-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
-            ⚠️ Stripe Elements no está montado todavía. Cuando el shop owner
-            configure las claves reales de Stripe, este bloque se reemplaza por
-            el formulario de tarjeta. Por ahora el pedido queda en estado
-            "Realizado" en tu dashboard.
-          </p>
+          <!-- Stripe.js renders an iframe inside this div. -->
+          <div
+            ref="paymentElRef"
+            class="mt-4"
+            data-testid="stripe-payment-element"
+          />
+          <AppButton
+            v-if="isStripeReady"
+            size="lg"
+            class="mt-4 w-full"
+            :loading="isConfirming"
+            data-testid="checkout-confirm-payment"
+            @click="onConfirmPayment"
+          >
+            Pagar {{ totalEur }} €
+          </AppButton>
         </AppCard>
 
         <!-- Error feedback -->

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -32,6 +32,48 @@ async function loadOrder() {
     isLoading.value = false
   }
 }
+
+// Poll order status while we wait for the Stripe webhook to flip
+// 'placed' -> 'paid'. Stripe webhooks fire async, typically within
+// 1-3 seconds of confirmPayment success. We poll every 2s for up to
+// 30s, then give up (the order is still safely 'placed' and will
+// transition when the webhook eventually arrives — UI just won't
+// auto-update without a manual refresh).
+const isPollingPaid = ref<boolean>(false)
+let pollTimer: number | null = null
+
+function shouldPollForPaid(o: Order | null): boolean {
+  return !!o && o.status === 'placed' && o.kind !== 'catalog' // catalog skips Stripe
+}
+
+async function pollUntilPaid() {
+  if (!orderUuid.value) return
+  isPollingPaid.value = true
+  const startedAt = Date.now()
+  const MAX_MS = 30_000
+  const INTERVAL_MS = 2_000
+  while (Date.now() - startedAt < MAX_MS) {
+    try {
+      const fresh = await ordersService.retrieve(orderUuid.value)
+      order.value = fresh
+      if (fresh.status !== 'placed') {
+        isPollingPaid.value = false
+        return
+      }
+    } catch { /* transient — keep polling */ }
+    await new Promise<void>((resolve) => {
+      pollTimer = window.setTimeout(resolve, INTERVAL_MS)
+    })
+  }
+  isPollingPaid.value = false
+}
+
+onBeforeUnmount(() => {
+  if (pollTimer !== null) {
+    window.clearTimeout(pollTimer)
+    pollTimer = null
+  }
+})
 
 const shortId = computed(() => (order.value ? `#${order.value.uuid.slice(0, 8)}` : ''))
 
@@ -76,7 +118,12 @@ const thumbnailUrl = computed<string | null>(() => {
   return original?.file ?? null
 })
 
-onMounted(loadOrder)
+onMounted(async () => {
+  await loadOrder()
+  if (shouldPollForPaid(order.value)) {
+    pollUntilPaid()
+  }
+})
 </script>
 
 <template>
@@ -119,6 +166,17 @@ onMounted(loadOrder)
         <span class="text-sm text-text-muted">Estado actual:</span>
         <StatusBadge :status="order.status" />
       </div>
+
+      <!-- Stripe-paid orders briefly sit at 'placed' until the webhook fires.
+           We poll for ~30s after landing here; show a quiet hint so the
+           customer doesn't think the page is broken. -->
+      <p
+        v-if="isPollingPaid"
+        class="mt-3 text-xs text-text-muted"
+        data-testid="confirming-payment-hint"
+      >
+        Confirmando tu pago con Stripe…
+      </p>
 
       <!-- Pickup info block — only renders for reserved orders. Mirrors
            the structure of the shipping email so the customer has the
