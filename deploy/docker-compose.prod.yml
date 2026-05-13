@@ -1,0 +1,87 @@
+# =============================================================================
+# StickerApp production docker compose (lives at /opt/stickerapp/ on the VPS).
+#
+# Services:
+#   - db          Postgres 15 (named volume, internal only)
+#   - web         Django + gunicorn (built from ./backend, internal only)
+#   - nginx       reverse proxy + TLS termination + SPA static serving.
+#                 Co-tenant: routes /tienda/ to DreamHost's managed Apache
+#                 (listening on the HOST at 127.0.0.1:8080) which serves
+#                 the WordPress install for endosestudio.com.
+#                 Also serves two unrelated customer sites (grafitop.com +
+#                 exonix.eu) by proxying their HTTPS to the same local
+#                 Apache.
+#
+# The web service expects ./backend/ to contain the rsynced backend source
+# (the same tree as endossutdio_backend/ on Sebastian's laptop). The nginx
+# service serves Vue files from ./frontend/dist (rsynced from `npm run build`).
+#
+# Top-level deploy flows in DEPLOYMENT.md. The two gotchas to remember:
+#   - backend code change → `build` THEN `up -d` (restart reuses old image)
+#   - env var change      → `stop` → `rm -f` → `up -d` (restart reuses old env)
+# =============================================================================
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: stickerapp_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./backend
+      args:
+        REQUIREMENTS: prod
+    container_name: stickerapp_web
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - media:/app/media
+      - static:/app/staticfiles
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import http.client; c=http.client.HTTPConnection(\"localhost\",8000); c.request(\"GET\",\"/api/v1/health/\"); r=c.getresponse(); exit(0 if r.status==200 else 1)' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: stickerapp_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/acme-challenge:/var/www/acme-challenge:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - media:/var/www/media:ro
+      - static:/var/www/static:ro
+    depends_on:
+      - web
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost/.well-known/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  media:
+  static:

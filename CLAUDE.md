@@ -3,7 +3,7 @@
 > **Studio**: YeKo Studio · **Client**: Barcelona print shop selling custom stickers
 > **Stack**: Vue 3 (Composition API + `<script setup>`) · Vite · TS · Vue Router 4 · Pinia · Tailwind · Axios · Canvas + WebGL · OpenCV.js (CDN, in Worker)
 > **Backend**: `/Users/cevichesmac/Desktop/yeko_studio/endosstudio_project/endossutdio_backend/` (Django + DRF). Source of truth for API shapes — read its serializers, not the design pack.
-> **Status (EOD 2026-05-12)**: MVP customer flow complete. 72+ Playwright specs green. Remaining blockers are operational (Stripe live keys, prod SMTP, first deploy), not code.
+> **Status (2026-05-13)**: 🟢 **LIVE at https://endosestudio.com**. Hostinger KVM VPS (Ubuntu 24.04, Frankfurt, IP `187.124.29.215`). docker compose (db + web + nginx), Let's Encrypt TLS, Gmail SMTP working end-to-end (verification emails arrive in <30s), rembg warmed at boot. WordPress moved to DreamHost VPS `vps70246` at `wp.endosestudio.com`, reverse-proxied behind a hidden path `/k7p2x9/`. **Only missing piece**: CheckoutView Stripe Elements mount — backend PaymentIntent flow works (Stripe test sandbox keys configured, customer can place orders, PI gets minted), but the frontend still shows a placeholder where `<PaymentElement>` should be. Once that ships, deploy is feature-complete.
 
 ---
 
@@ -387,17 +387,15 @@ Stepper: catalog=3, sticker=3 (collapsed from 4 — material+shape removed from 
 
 ## Status — pick up here
 
-**No open thread — session 2026-05-12 ended green.** All on `main`. 72+ specs passing (1 skipped). Typecheck clean.
+**Deployment infra landed (2026-05-13).** `deploy/` + `DEPLOYMENT.md` ship the LabControl-shape recipe (DreamHost VPS, docker compose, nginx, Let's Encrypt, Gmail SMTP, Stripe test mode day 1, WordPress co-tenant at `/tienda`). Backend Dockerfile now ENTRYPOINTs through `entrypoint.sh` (migrate + collectstatic before gunicorn). `/api/v1/health/` endpoint added for compose healthcheck. `.env.production.template` lives in both repos.
 
-### Small follow-ups (non-blocking)
-- **Macro PNG seamless-tile QC** — 4× `*_macro.png` may show grid lines at 2× tile boundary on large stickers. Not customer-reported. QC by eye on full-screen preview. If visible: Photoshop "Offset" filter or imgonline.com.ua seamless tool.
+**Ready to execute on the VPS.** Sebastian has DreamHost SSH access, the domain, and the Gmail App Password. Run through `DEPLOYMENT.md` Phases 0→4. Stripe keys remain test-mode until live keys are swapped via §3.3 (env-update flow).
+
+### Small follow-ups (non-blocking, post-deploy)
+- **Macro PNG seamless-tile QC** — 4× `*_macro.png` may show grid lines at 2× tile boundary on large stickers. QC by eye on full-screen preview after deploy.
 - **Catalog stock decrement** — wired at `transition_to_paid` but no E2E spec exercises paid→stock path. Add when Stripe live.
 - **Cut-path SVG download from admin order detail** — backend generates at `transition_to_paid` but admin UI doesn't surface link. ~10 lines.
-
-### Operational blockers (not code)
-1. Real Stripe keys (checkout endpoint returns 502 without; swap stub in CheckoutView for real `<PaymentElement>` mount).
-2. Email backend SMTP for prod.
-3. First deploy (hosting choice, domain, TLS). CheckoutView `return_url` needs deployed origin.
+- **CheckoutView Stripe mount** — currently stubbed. Swap stub for real `<PaymentElement>` once Stripe test keys are pasted into `.env.production` and webhook secret is registered.
 
 ---
 
@@ -406,12 +404,9 @@ Stepper: catalog=3, sticker=3 (collapsed from 4 — material+shape removed from 
 > Backend has its own log at `endossutdio_backend/CLAUDE.md` for its share (email provider, hosting, Stripe owner, webhook secret, media storage). This covers frontend-specific.
 
 ### Frontend hosting target
-- **Status**: open.
-- **Recommendation**: **Vercel/Netlify** for SPA. Auto-deploy from GitHub + preview URLs.
-- **Tradeoffs**:
-  - *Vercel/Netlify*: zero ops, auto TLS, previews. Two origins → CORS + cookie domain. Free tier limits far above SMB needs.
-  - *Self-host behind backend nginx*: one origin, no CORS, simpler cookies. No preview URLs. Needs SPA fallback (`try_files $uri $uri/ /index.html`).
-- **Trigger**: when deploy task starts.
+- **Status**: DECIDED 2026-05-13: **Self-hosted on the customer's DreamHost VPS behind our nginx**, single-origin with the backend. Vue dist/ rsynced from local `npm run build`. No SPA container. Same domain serves the app at root + WordPress at `/tienda` (existing customer site moved under a subpath).
+- **Why**: customer already owns the VPS and the domain; WordPress co-tenancy required; single-origin removes CORS complexity; matches LabControl's proven recipe.
+- See `DEPLOYMENT.md` for the runbook.
 
 ### Font loading
 - **Status**: open. Inter locked as primary.
